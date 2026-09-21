@@ -100,6 +100,7 @@ public final class MirooReceiver: @unchecked Sendable {
                 print("[Miroo Receiver] Disconnected from server: \(error?.localizedDescription ?? "Normal close")")
                 self.stopPingTimer()
                 self.connection = nil
+                self.streamConfig = nil
                 self.onDisconnected?(error)
 
                 if self.isAutoReconnectEnabled {
@@ -124,6 +125,7 @@ public final class MirooReceiver: @unchecked Sendable {
             self.browser.stop()
             self.connection?.disconnect()
             self.connection = nil
+            self.streamConfig = nil
             print("[Miroo Receiver] Stopped.")
         }
     }
@@ -160,18 +162,18 @@ public final class MirooReceiver: @unchecked Sendable {
 
         case .streamConfig:
             if let config = message.decodePayload(StreamConfigPayload.self) {
-                let isUpdate = (self.streamConfig != nil)
+                let isAlreadyStreaming = (conn.state == .streaming)
                 self.streamConfig = config
                 print("")
                 print("===========================================")
-                print(" Stream Config \(isUpdate ? "Updated" : "Initialized")")
+                print(" Stream Config \(isAlreadyStreaming ? "Updated" : "Initialized")")
                 print(" Dimensions: \(config.width)x\(config.height) (\(config.orientation))")
                 print(" Frame Rate: \(config.fps) FPS (\(config.codec))")
                 print(" Bitrate: \(Double(config.bitrate) / 1_000_000.0) Mbps")
                 print("===========================================")
                 print("")
 
-                if !isUpdate {
+                if !isAlreadyStreaming {
                     print("[Miroo Receiver] Sending READY...")
                     conn.send(message: MirooMessage.ready())
                     conn.transitionToStreaming()
