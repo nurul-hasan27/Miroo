@@ -92,18 +92,30 @@ public final class DisplayStreamCapturer: NSObject, SCStreamOutput, SCStreamDele
         print("[Miroo] Display ID: \(displayID)")
         print("[Miroo] Capture resolution: \(targetWidth)x\(targetHeight)")
 
-        // 2. Discover displays via ScreenCaptureKit
-        let content: SCShareableContent
-        do {
-            content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
-        } catch {
-            throw CapturerError.captureFailed("Failed to fetch shareable content: \(error.localizedDescription)")
+        // 2. Discover displays via ScreenCaptureKit (with retry for asynchronous WindowServer registration)
+        var targetSCDisplay: SCDisplay?
+        var lastDiscoveredDisplays: [SCDisplay] = []
+
+        for attempt in 1...15 {
+            do {
+                let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+                lastDiscoveredDisplays = content.displays
+                if let found = content.displays.first(where: { $0.displayID == displayID }) {
+                    targetSCDisplay = found
+                    break
+                }
+            } catch {
+                if attempt == 15 {
+                    throw CapturerError.captureFailed("Failed to fetch shareable content: \(error.localizedDescription)")
+                }
+            }
+            try? await Task.sleep(nanoseconds: 200_000_000) // 200ms
         }
 
-        guard let targetSCDisplay = content.displays.first(where: { $0.displayID == displayID }) else {
-            print("[Miroo] ERROR: Target display ID \(displayID) not found in ScreenCaptureKit.")
-            print("[Miroo] Discovered SC displays count: \(content.displays.count)")
-            for d in content.displays {
+        guard let targetSCDisplay = targetSCDisplay else {
+            print("[Miroo] ERROR: Target display ID \(displayID) not found in ScreenCaptureKit after 15 attempts.")
+            print("[Miroo] Discovered SC displays count: \(lastDiscoveredDisplays.count)")
+            for d in lastDiscoveredDisplays {
                 print("  - Display ID: \(d.displayID), bounds: (\(d.width)x\(d.height))")
             }
             throw CapturerError.displayNotFound(displayID)
