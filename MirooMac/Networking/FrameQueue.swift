@@ -130,6 +130,13 @@ public final class FrameQueue: @unchecked Sendable {
         return storage.isEmpty
     }
 
+    /// Explicitly flags that an immediate IDR keyframe is required (e.g. after orientation change or packet loss).
+    public func requestImmediateKeyframe() {
+        os_unfair_lock_lock(&lock)
+        defer { os_unfair_lock_unlock(&lock) }
+        needsImmediateKeyframe = true
+    }
+
     /// Clears all queued frames.
     public func clear() {
         os_unfair_lock_lock(&lock)

@@ -16,6 +16,7 @@ public enum CapturerError: LocalizedError {
     case permissionDenied
     case displayNotFound(CGDirectDisplayID)
     case streamAlreadyRunning
+    case streamNotRunning
     case captureFailed(String)
 
     public var errorDescription: String? {
@@ -26,6 +27,8 @@ public enum CapturerError: LocalizedError {
             return "Target virtual display with ID \(id) was not found in ScreenCaptureKit shareable content."
         case .streamAlreadyRunning:
             return "ScreenCaptureKit stream is already running."
+        case .streamNotRunning:
+            return "ScreenCaptureKit stream is not running."
         case .captureFailed(let reason):
             return "ScreenCaptureKit capture failed: \(reason)"
         }

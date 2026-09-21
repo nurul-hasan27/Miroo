@@ -16,8 +16,8 @@ public final class MirooServer: @unchecked Sendable {
     // MARK: - Configuration
     public let serviceType = "_miroo._tcp"
     public let serviceName: String
-    public let width: Int
-    public let height: Int
+    public private(set) var width: Int
+    public private(set) var height: Int
     public let targetFPS: Int
     public let bitrate: Int
 
@@ -37,6 +37,7 @@ public final class MirooServer: @unchecked Sendable {
     public var onClientConnected: ((String) -> Void)?
     public var onClientDisconnected: (() -> Void)?
     public var onStreamingStarted: (() -> Void)?
+    public var onOrientationChangeRequested: ((MirooOrientation) -> Void)?
 
     public init(
         serviceName: String = Host.current().localizedName ?? "Miroo Mac",
@@ -234,9 +235,32 @@ public final class MirooServer: @unchecked Sendable {
             }
             conn.disconnect()
 
+        case .displayOrientation:
+            if let payload = message.decodePayload(DisplayOrientationPayload.self) {
+                print("[Miroo Server] Received DISPLAY_ORIENTATION from client: \(payload.orientation)")
+                onOrientationChangeRequested?(payload.orientation)
+            }
+
         default:
             break
         }
+    }
+
+    /// Sends an updated STREAM_CONFIG message to the client upon resolution/orientation changes.
+    public func sendStreamConfig(width: Int, height: Int, orientation: MirooOrientation) {
+        self.width = width
+        self.height = height
+        guard let conn = activeConnection else { return }
+        print("[Miroo Server] Sending updated STREAM_CONFIG: \(width)x\(height), \(orientation)...")
+        let streamMsg = MirooMessage.streamConfig(
+            codec: "H264",
+            width: width,
+            height: height,
+            fps: targetFPS,
+            bitrate: bitrate,
+            orientation: orientation
+        )
+        conn.send(message: streamMsg)
     }
 
     // MARK: - Frame Ingestion & Backpressure Send Pump

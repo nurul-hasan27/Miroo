@@ -12,6 +12,9 @@ import Cocoa
 #if canImport(CGVirtualDisplayBridge)
 import CGVirtualDisplayBridge
 #endif
+#if canImport(MirooNetworking)
+import MirooNetworking
+#endif
 
 /// Manages the virtual display on macOS, coordinating between private CoreGraphics
 /// creation APIs and public CoreGraphics display configuration APIs.

@@ -126,6 +126,57 @@ final class MirooMacApp: NSObject, NSApplicationDelegate {
             encoder?.encode(pixelBuffer: pixelBuffer, presentationTime: presentationTime, forceKeyframe: forceKey)
         }
 
+        // Handle dynamic orientation change requested by client iPhone
+        server.onOrientationChangeRequested = { [weak server, weak manager, weak capturer, weak encoder] newOrientation in
+            Task { @MainActor in
+                guard let manager = manager,
+                      let capturer = capturer,
+                      let encoder = encoder,
+                      let server = server else { return }
+
+                print("\n[Miroo] >>> Orientation change requested by iPhone: \(newOrientation) <<<")
+
+                // 1. Reconfigure virtual display mode
+                let success = manager.setOrientation(newOrientation)
+                guard success else {
+                    print("[Miroo] ERROR: Failed to switch virtual display to \(newOrientation)")
+                    return
+                }
+
+                let newPhysicalWidth = (newOrientation == .landscape) ? Int(VirtualDisplayManager.physicalHeight) : Int(VirtualDisplayManager.physicalWidth)
+                let newPhysicalHeight = (newOrientation == .landscape) ? Int(VirtualDisplayManager.physicalWidth) : Int(VirtualDisplayManager.physicalHeight)
+
+                // 2. Update ScreenCaptureKit stream resolution
+                do {
+                    try await capturer.updateResolution(targetWidth: newPhysicalWidth, targetHeight: newPhysicalHeight)
+                } catch {
+                    print("[Miroo] WARNING: SCK updateResolution error: \(error.localizedDescription). Re-attaching stream...")
+                    await capturer.stopCapture()
+                    try? await capturer.startCapture(
+                        displayID: manager.displayID,
+                        displayName: VirtualDisplayManager.defaultDisplayName,
+                        targetWidth: newPhysicalWidth,
+                        targetHeight: newPhysicalHeight,
+                        targetFPS: 60
+                    )
+                }
+
+                // 3. Reconfigure VideoToolbox encoder (flushes old frames, resets session for new resolution)
+                do {
+                    try encoder.reconfigure(width: Int32(newPhysicalWidth), height: Int32(newPhysicalHeight))
+                } catch {
+                    print("[Miroo] ERROR: Failed to reconfigure encoder: \(error.localizedDescription)")
+                }
+
+                // 4. Send updated STREAM_CONFIG before resuming video frames
+                server.sendStreamConfig(width: newPhysicalWidth, height: newPhysicalHeight, orientation: newOrientation)
+
+                // 5. Force immediate IDR keyframe with the new SPS/PPS
+                server.frameQueue.requestImmediateKeyframe()
+                print("[Miroo] Orientation switch to \(newOrientation) (\(newPhysicalWidth)x\(newPhysicalHeight)) successfully completed.\n")
+            }
+        }
+
         // 6. Start ScreenCaptureKit Capture
         Task {
             do {
