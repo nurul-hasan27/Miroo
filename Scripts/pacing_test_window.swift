@@ -160,6 +160,8 @@ class MotionTestView: NSView {
 
 let testView = MotionTestView(frame: NSRect(x: 0, y: 0, width: 525, height: 800))
 window.contentView = testView
+window.setFrame(rect, display: true)
+window.setFrameOrigin(rect.origin)
 window.makeKeyAndOrderFront(nil)
 window.orderFrontRegardless()
 app.activate(ignoringOtherApps: true)
