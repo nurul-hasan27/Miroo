@@ -2,8 +2,8 @@
 //  VideoFrame.swift
 //  Miroo
 //
-//  Phase 5 & 6: Decoded video frame encapsulation with presentation timestamps,
-//  per-stage latency breakdown, jitter analysis, and pipeline diagnostics.
+//  Phase 5, 6 & 6.5: Decoded video frame encapsulation with presentation timestamps,
+//  per-stage latency breakdown, jitter analysis, frame interval statistics, and Metal timing.
 //
 
 import Foundation
@@ -25,6 +25,25 @@ public struct FrameDiagnostics: Sendable {
     public var queueDepth: Int
     public var bitrateMbps: Double
 
+    // Phase 6.5 Frame Pacing & Interval Metrics
+    public var avgIntervalMs: Double
+    public var minIntervalMs: Double
+    public var maxIntervalMs: Double
+    public var p50IntervalMs: Double
+    public var p95IntervalMs: Double
+    public var p99IntervalMs: Double
+    public var jitterStdDevMs: Double
+    public var framesOver20ms: Int
+    public var framesOver25ms: Int
+    public var framesOver33ms: Int
+
+    // Phase 6.5 Metal Sub-Stage Breakdown
+    public var metalPrepMs: Double
+    public var metalDrawableWaitMs: Double
+    public var metalEncodeMs: Double
+    public var metalGpuMs: Double
+    public var presentationMode: String
+
     public init(
         captureMs: Double = 0.0,
         encodeMs: Double = 0.0,
@@ -37,7 +56,22 @@ public struct FrameDiagnostics: Sendable {
         jitterMs: Double = 0.0,
         dropPercentage: Double = 0.0,
         queueDepth: Int = 0,
-        bitrateMbps: Double = 0.0
+        bitrateMbps: Double = 0.0,
+        avgIntervalMs: Double = 16.67,
+        minIntervalMs: Double = 16.67,
+        maxIntervalMs: Double = 16.67,
+        p50IntervalMs: Double = 16.67,
+        p95IntervalMs: Double = 16.67,
+        p99IntervalMs: Double = 16.67,
+        jitterStdDevMs: Double = 0.5,
+        framesOver20ms: Int = 0,
+        framesOver25ms: Int = 0,
+        framesOver33ms: Int = 0,
+        metalPrepMs: Double = 0.2,
+        metalDrawableWaitMs: Double = 0.1,
+        metalEncodeMs: Double = 0.2,
+        metalGpuMs: Double = 0.5,
+        presentationMode: String = "Push"
     ) {
         self.captureMs = captureMs
         self.encodeMs = encodeMs
@@ -51,6 +85,21 @@ public struct FrameDiagnostics: Sendable {
         self.dropPercentage = dropPercentage
         self.queueDepth = queueDepth
         self.bitrateMbps = bitrateMbps
+        self.avgIntervalMs = avgIntervalMs
+        self.minIntervalMs = minIntervalMs
+        self.maxIntervalMs = maxIntervalMs
+        self.p50IntervalMs = p50IntervalMs
+        self.p95IntervalMs = p95IntervalMs
+        self.p99IntervalMs = p99IntervalMs
+        self.jitterStdDevMs = jitterStdDevMs
+        self.framesOver20ms = framesOver20ms
+        self.framesOver25ms = framesOver25ms
+        self.framesOver33ms = framesOver33ms
+        self.metalPrepMs = metalPrepMs
+        self.metalDrawableWaitMs = metalDrawableWaitMs
+        self.metalEncodeMs = metalEncodeMs
+        self.metalGpuMs = metalGpuMs
+        self.presentationMode = presentationMode
     }
 }
 
