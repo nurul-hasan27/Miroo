@@ -75,6 +75,13 @@ final class ReceiverViewModel: ObservableObject {
         receiver.sendOrientation(orientation)
     }
 
+    func forceOrientation(_ orientation: MirooOrientation) {
+        lastRequestedOrientation = orientation
+        currentOrientation = orientation
+        print("[Miroo App] Explicitly forcing orientation switch to: \(orientation.rawValue)")
+        receiver.sendOrientation(orientation)
+    }
+
     private func setupPipeline() {
         // 1. Connection Callbacks
         receiver.onConnected = { [weak self] hostName in
@@ -178,11 +185,19 @@ struct ReceiverContentView: View {
                             }
 
                         if viewModel.showHUD {
-                            DiagnosticHUDView(d: viewModel.diagnostics, orientation: viewModel.currentOrientation) {
-                                withAnimation(.easeInOut(duration: 0.2)) {
-                                    viewModel.showHUD = false
+                            DiagnosticHUDView(
+                                d: viewModel.diagnostics,
+                                orientation: viewModel.currentOrientation,
+                                onDismiss: {
+                                    withAnimation(.easeInOut(duration: 0.2)) {
+                                        viewModel.showHUD = false
+                                    }
+                                },
+                                onToggleOrientation: {
+                                    let next: MirooOrientation = (viewModel.currentOrientation == .portrait) ? .landscape : .portrait
+                                    viewModel.forceOrientation(next)
                                 }
-                            }
+                            )
                             .padding(.top, isLandscape ? 20 : 48)
                             .padding(.leading, isLandscape ? 44 : 16)
                             .transition(.opacity)
@@ -301,6 +316,7 @@ struct DiagnosticHUDView: View {
     let d: FrameDiagnostics
     var orientation: MirooOrientation = .portrait
     let onDismiss: () -> Void
+    var onToggleOrientation: (() -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -319,7 +335,31 @@ struct DiagnosticHUDView: View {
 
             Divider().background(Color.white.opacity(0.25))
 
-            hudRow(label: "Mode", value: "\(orientation.rawValue.capitalized)")
+            HStack {
+                Text("Mode")
+                    .font(.system(size: 11, weight: .regular, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.85))
+                Spacer()
+                if let onToggle = onToggleOrientation {
+                    Button(action: onToggle) {
+                        HStack(spacing: 3) {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                                .font(.system(size: 9))
+                            Text(orientation.rawValue.capitalized)
+                                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        }
+                        .foregroundColor(.cyan)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.white.opacity(0.15))
+                        .cornerRadius(4)
+                    }
+                } else {
+                    Text(orientation.rawValue.capitalized)
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundColor(.white)
+                }
+            }
 
             hudRow(label: "Capture", value: String(format: "%.1f ms", d.captureMs))
             hudRow(label: "Encode", value: String(format: "%.1f ms", d.encodeMs))
