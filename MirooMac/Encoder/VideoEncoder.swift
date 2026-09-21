@@ -38,12 +38,23 @@ public enum VideoEncoderError: LocalizedError {
 public final class VideoEncoder {
 
     // MARK: - Configuration
-
-    public let width: Int32
-    public let height: Int32
+    public private(set) var width: Int32
+    public private(set) var height: Int32
     public let targetFPS: Int32
     public let averageBitrate: Int32
     public let keyframeInterval: Int32
+
+    /// Dynamically reconfigures the encoder for new frame dimensions (orientation change).
+    /// Flushes and tears down the old compression session, resets session state, and creates a new one.
+    public func reconfigure(width: Int32, height: Int32) throws {
+        guard self.width != width || self.height != height else { return }
+        print("[Miroo] Reconfiguring VideoEncoder: \(self.width)x\(self.height) -> \(width)x\(height)...")
+        invalidate()
+        self.width = width
+        self.height = height
+        try setup()
+        print("[Miroo] VideoEncoder reconfigured for \(width)x\(height).")
+    }
 
     // MARK: - Properties
 
