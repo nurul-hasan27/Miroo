@@ -27,7 +27,7 @@ let style: NSWindow.StyleMask = [.titled, .closable, .resizable]
 let window = NSWindow(contentRect: rect, styleMask: style, backing: .buffered, defer: false)
 window.title = "Miroo 60 FPS Frame-Pacing Test"
 window.backgroundColor = .black
-window.level = .floating
+window.level = .screenSaver
 window.collectionBehavior = [.canJoinAllSpaces, .stationary]
 window.isOpaque = true
 
