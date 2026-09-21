@@ -67,9 +67,9 @@ app.activate(ignoringOtherApps: true)
 let formatter = DateFormatter()
 formatter.dateFormat = "HH:mm:ss.SS"
 
-print("Live window active at \(rect). Running for 60 seconds...")
+print("Live window active at \(rect). Running for 300 seconds...")
 
-let deadline = Date().addingTimeInterval(60)
+let deadline = Date().addingTimeInterval(300)
 while Date() < deadline {
     clockLabel.stringValue = formatter.string(from: Date())
     if let event = app.nextEvent(matching: .any, until: Date().addingTimeInterval(0.05), inMode: .default, dequeue: true) {
