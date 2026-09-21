@@ -79,10 +79,11 @@ public final class VirtualDisplayManager {
         var acquiredBridge: CGVirtualDisplayBridge?
         var lastError: Error?
 
-        for attempt in 0..<10 {
-            let serial = Self.defaultSerialNum + UInt32(attempt)
+        let baseSerial = (UInt32(Date().timeIntervalSince1970) & 0x3FFF) + 0x2000
+        for attempt in 0..<15 {
+            let serial = baseSerial + UInt32(attempt)
             do {
-                acquiredBridge = try CGVirtualDisplayBridge(
+                let candidate = try CGVirtualDisplayBridge(
                     name: Self.defaultDisplayName,
                     logicalWidth: Self.logicalWidth,
                     logicalHeight: Self.logicalHeight,
@@ -93,8 +94,13 @@ public final class VirtualDisplayManager {
                     sizeInMillimeters: Self.defaultSizeInMillimeters,
                     queue: DispatchQueue.main
                 )
-                if acquiredBridge != nil {
-                    break
+                if candidate.displayID != 0 {
+                    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.2))
+                    if CGDisplayIsOnline(candidate.displayID) != 0 {
+                        acquiredBridge = candidate
+                        break
+                    }
+                    candidate.destroy()
                 }
             } catch {
                 lastError = error
