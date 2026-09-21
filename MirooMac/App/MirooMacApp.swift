@@ -129,51 +129,30 @@ final class MirooMacApp: NSObject, NSApplicationDelegate {
         // Handle dynamic orientation change requested by client iPhone
         server.onOrientationChangeRequested = { [weak server, weak manager, weak capturer, weak encoder] newOrientation in
             Task { @MainActor in
-                guard let manager = manager,
-                      let capturer = capturer,
-                      let encoder = encoder,
-                      let server = server else { return }
+                guard let manager = manager, let capturer = capturer, let encoder = encoder, let server = server else { return }
+                await MirooMacApp.performOrientationSwitch(to: newOrientation, manager: manager, capturer: capturer, encoder: encoder, server: server)
+            }
+        }
 
-                print("\n[Miroo] >>> Orientation change requested by iPhone: \(newOrientation) <<<")
-
-                // 1. Reconfigure virtual display mode
-                let success = manager.setOrientation(newOrientation)
-                guard success else {
-                    print("[Miroo] ERROR: Failed to switch virtual display to \(newOrientation)")
-                    return
+        // Background stdin listener for interactive terminal control ('p' = portrait, 'l' = landscape, 'r' = toggle)
+        DispatchQueue.global(qos: .userInitiated).async { [weak server, weak manager, weak capturer, weak encoder] in
+            let stdinHandle = FileHandle.standardInput
+            while true {
+                let data = stdinHandle.availableData
+                guard !data.isEmpty, let line = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else {
+                    break
                 }
-
-                let newPhysicalWidth = (newOrientation == .landscape) ? Int(VirtualDisplayManager.physicalHeight) : Int(VirtualDisplayManager.physicalWidth)
-                let newPhysicalHeight = (newOrientation == .landscape) ? Int(VirtualDisplayManager.physicalWidth) : Int(VirtualDisplayManager.physicalHeight)
-
-                // 2. Update ScreenCaptureKit stream resolution
-                do {
-                    try await capturer.updateResolution(targetWidth: newPhysicalWidth, targetHeight: newPhysicalHeight)
-                } catch {
-                    print("[Miroo] WARNING: SCK updateResolution error: \(error.localizedDescription). Re-attaching stream...")
-                    await capturer.stopCapture()
-                    try? await capturer.startCapture(
-                        displayID: manager.displayID,
-                        displayName: VirtualDisplayManager.defaultDisplayName,
-                        targetWidth: newPhysicalWidth,
-                        targetHeight: newPhysicalHeight,
-                        targetFPS: 60
-                    )
+                Task { @MainActor in
+                    guard let manager = manager, let capturer = capturer, let encoder = encoder, let server = server else { return }
+                    if line == "p" || line == "portrait" {
+                        await MirooMacApp.performOrientationSwitch(to: .portrait, manager: manager, capturer: capturer, encoder: encoder, server: server)
+                    } else if line == "l" || line == "landscape" {
+                        await MirooMacApp.performOrientationSwitch(to: .landscape, manager: manager, capturer: capturer, encoder: encoder, server: server)
+                    } else if line == "r" || line == "rotate" {
+                        let next: MirooOrientation = (manager.currentOrientation == .portrait) ? .landscape : .portrait
+                        await MirooMacApp.performOrientationSwitch(to: next, manager: manager, capturer: capturer, encoder: encoder, server: server)
+                    }
                 }
-
-                // 3. Reconfigure VideoToolbox encoder (flushes old frames, resets session for new resolution)
-                do {
-                    try encoder.reconfigure(width: Int32(newPhysicalWidth), height: Int32(newPhysicalHeight))
-                } catch {
-                    print("[Miroo] ERROR: Failed to reconfigure encoder: \(error.localizedDescription)")
-                }
-
-                // 4. Send updated STREAM_CONFIG before resuming video frames
-                server.sendStreamConfig(width: newPhysicalWidth, height: newPhysicalHeight, orientation: newOrientation)
-
-                // 5. Force immediate IDR keyframe with the new SPS/PPS
-                server.frameQueue.requestImmediateKeyframe()
-                print("[Miroo] Orientation switch to \(newOrientation) (\(newPhysicalWidth)x\(newPhysicalHeight)) successfully completed.\n")
             }
         }
 
@@ -204,8 +183,59 @@ final class MirooMacApp: NSObject, NSApplicationDelegate {
         print(" Miroo Full Pipeline Active:")
         print(" Virtual Display -> SCK -> H.264 -> Bonjour + TCP Network Transport")
         print(" iPhone can now discover and stream from this Mac.")
+        print(" Controls: Type 'p' (portrait), 'l' (landscape), 'r' (toggle)")
         print(" Press Ctrl+C in this terminal to quit.")
         print("-------------------------------------------------------")
+    }
+
+    @MainActor
+    static func performOrientationSwitch(
+        to newOrientation: MirooOrientation,
+        manager: VirtualDisplayManager,
+        capturer: DisplayStreamCapturer,
+        encoder: VideoEncoder,
+        server: MirooServer
+    ) async {
+        print("\n[Miroo] >>> Orientation switch requested: \(newOrientation.rawValue) <<<")
+
+        // 1. Reconfigure virtual display mode
+        let success = manager.setOrientation(newOrientation)
+        guard success else {
+            print("[Miroo] ERROR: Failed to switch virtual display to \(newOrientation)")
+            return
+        }
+
+        let newPhysicalWidth = (newOrientation == .landscape) ? Int(VirtualDisplayManager.physicalHeight) : Int(VirtualDisplayManager.physicalWidth)
+        let newPhysicalHeight = (newOrientation == .landscape) ? Int(VirtualDisplayManager.physicalWidth) : Int(VirtualDisplayManager.physicalHeight)
+
+        // 2. Update ScreenCaptureKit stream resolution
+        do {
+            try await capturer.updateResolution(targetWidth: newPhysicalWidth, targetHeight: newPhysicalHeight)
+        } catch {
+            print("[Miroo] WARNING: SCK updateResolution error: \(error.localizedDescription). Re-attaching stream...")
+            await capturer.stopCapture()
+            try? await capturer.startCapture(
+                displayID: manager.displayID,
+                displayName: VirtualDisplayManager.defaultDisplayName,
+                targetWidth: newPhysicalWidth,
+                targetHeight: newPhysicalHeight,
+                targetFPS: 60
+            )
+        }
+
+        // 3. Reconfigure VideoToolbox encoder (flushes old frames, resets session for new resolution)
+        do {
+            try encoder.reconfigure(width: Int32(newPhysicalWidth), height: Int32(newPhysicalHeight))
+        } catch {
+            print("[Miroo] ERROR: Failed to reconfigure encoder: \(error.localizedDescription)")
+        }
+
+        // 4. Send updated STREAM_CONFIG before resuming video frames
+        server.sendStreamConfig(width: newPhysicalWidth, height: newPhysicalHeight, orientation: newOrientation)
+
+        // 5. Force immediate IDR keyframe with the new SPS/PPS
+        server.frameQueue.requestImmediateKeyframe()
+        print("[Miroo] Orientation switch to \(newOrientation.rawValue) (\(newPhysicalWidth)x\(newPhysicalHeight)) successfully completed.\n")
     }
 
     func applicationWillTerminate(_ notification: Notification) {
