@@ -151,6 +151,34 @@ public final class DisplayStreamCapturer: NSObject, SCStreamOutput, SCStreamDele
         print("[Miroo] ScreenCaptureKit stream active and awaiting frames...")
     }
 
+    /// Dynamically updates the captured stream configuration for the new orientation resolution.
+    public func updateResolution(targetWidth: Int, targetHeight: Int) async throws {
+        guard isCapturing, let stream = stream else {
+            throw CapturerError.streamNotRunning
+        }
+        print("[Miroo] Updating ScreenCaptureKit resolution to \(targetWidth)x\(targetHeight)...")
+
+        // 1. Fetch updated shareable content to refresh display bounds if possible
+        if let content = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false),
+           let updatedDisplay = content.displays.first(where: { $0.displayID == targetDisplayID }) {
+            let filter = SCContentFilter(display: updatedDisplay, excludingWindows: [])
+            try? await stream.updateContentFilter(filter)
+        }
+
+        // 2. Update stream configuration
+        let config = SCStreamConfiguration()
+        config.width = targetWidth
+        config.height = targetHeight
+        config.minimumFrameInterval = CMTime(value: 1, timescale: 60)
+        config.pixelFormat = kCVPixelFormatType_32BGRA
+        config.capturesAudio = false
+        config.showsCursor = true
+        config.queueDepth = 2
+
+        try await stream.updateConfiguration(config)
+        print("[Miroo] ScreenCaptureKit resolution successfully updated to \(targetWidth)x\(targetHeight).")
+    }
+
     /// Stops the ScreenCaptureKit stream asynchronously.
     public func stopCapture() async {
         guard isCapturing, let activeStream = stream else { return }
