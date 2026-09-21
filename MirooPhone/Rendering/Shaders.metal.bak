@@ -1,0 +1,74 @@
+//
+//  Shaders.metal
+//  Miroo
+//
+//  Phase 5: Metal vertex and fragment shaders for bi-planar YUV420 to RGB
+//  color conversion on Apple Silicon GPUs.
+//
+
+#include <metal_stdlib>
+using namespace metal;
+
+struct VertexOutput {
+    float4 position [[position]];
+    float2 texCoord;
+};
+
+struct DisplayUniforms {
+    float2 scale; // Aspect-fit scale factor
+};
+
+vertex VertexOutput videoVertexShader(
+    uint vertexID [[vertex_id]],
+    constant DisplayUniforms &uniforms [[buffer(0)]]
+) {
+    float2 basePositions[4] = {
+        float2(-1.0, -1.0),
+        float2( 1.0, -1.0),
+        float2(-1.0,  1.0),
+        float2( 1.0,  1.0)
+    };
+
+    float2 texCoords[4] = {
+        float2(0.0, 1.0),
+        float2(1.0, 1.0),
+        float2(0.0, 0.0),
+        float2(1.0, 0.0)
+    };
+
+    VertexOutput out;
+    out.position = float4(basePositions[vertexID] * uniforms.scale, 0.0, 1.0);
+    out.texCoord = texCoords[vertexID];
+    return out;
+}
+
+fragment float4 videoFragmentShader(
+    VertexOutput in [[stage_in]],
+    texture2d<float> textureY  [[texture(0)]],
+    texture2d<float> textureUV [[texture(1)]]
+) {
+    constexpr sampler linearSampler(
+        coord::normalized,
+        address::clamp_to_edge,
+        filter::linear
+    );
+
+    // Sample Y and UV planes (420YpCbCr8BiPlanarVideoRange)
+    float y = textureY.sample(linearSampler, in.texCoord).r;
+    float2 uv = textureUV.sample(linearSampler, in.texCoord).rg;
+
+    // BT.709 Video Range to RGB conversion:
+    // Y is in [16/255, 235/255], Cb, Cr are in [16/255, 240/255]
+    float3 yuv;
+    yuv.x = y - (16.0 / 255.0);
+    yuv.y = uv.x - (128.0 / 255.0); // Cb
+    yuv.z = uv.y - (128.0 / 255.0); // Cr
+
+    // Standard ITU-R BT.709 Color Matrix
+    float3 rgb;
+    rgb.r = 1.164383 * yuv.x + 1.792741 * yuv.z;
+    rgb.g = 1.164383 * yuv.x - 0.213249 * yuv.y - 0.532909 * yuv.z;
+    rgb.b = 1.164383 * yuv.x + 2.112402 * yuv.y;
+
+    return float4(clamp(rgb, 0.0, 1.0), 1.0);
+}

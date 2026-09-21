@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.nurulhasan.MirooPhone</string>
+    <key>CFBundleName</key>
+    <string>MirooPhone</string>
+    <key>CFBundleDisplayName</key>
+    <string>Miroo</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFBundleExecutable</key>
+    <string>MirooPhone</string>
+    <key>LSRequiresIPhoneOS</key>
+    <true/>
+    <key>UILaunchScreen</key>
+    <dict/>
+    <key>UISupportedInterfaceOrientations</key>
+    <array>
+        <string>UIInterfaceOrientationPortrait</string>
+        <string>UIInterfaceOrientationLandscapeLeft</string>
+        <string>UIInterfaceOrientationLandscapeRight</string>
+    </array>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Miroo requires access to your local network to discover and stream display content from your Mac.</string>
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_miroo._tcp</string>
+    </array>
+</dict>
+</plist>
