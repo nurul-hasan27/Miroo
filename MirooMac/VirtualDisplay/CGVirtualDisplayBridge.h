@@ -144,6 +144,9 @@ NS_ASSUME_NONNULL_BEGIN
                                  queue:(dispatch_queue_t)queue
                                  error:(NSError * _Nullable * _Nullable)error;
 
+/// Dynamically updates the active virtual display mode resolution without destroying the display.
+- (BOOL)applyModeWithWidth:(uint32_t)width height:(uint32_t)height;
+
 /// Tears down and unregisters the virtual display from macOS WindowServer.
 - (void)destroy;
 

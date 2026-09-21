@@ -60,9 +60,11 @@
     [descriptor setDispatchQueue:targetQueue];
 
     descriptor.name = name;
-    descriptor.maxPixelsWide = (uint32_t)_physicalSize.width;
-    descriptor.maxPixelsHigh = (uint32_t)_physicalSize.height;
-    descriptor.sizeInMillimeters = sizeInMillimeters;
+    uint32_t maxDim = MAX(logicalWidth, logicalHeight) * _scaleFactor;
+    descriptor.maxPixelsWide = maxDim;
+    descriptor.maxPixelsHigh = maxDim;
+    CGFloat maxMM = MAX(sizeInMillimeters.width, sizeInMillimeters.height);
+    descriptor.sizeInMillimeters = CGSizeMake(maxMM, maxMM);
     descriptor.vendorID = vendorID;
     descriptor.productID = productID;
     descriptor.serialNum = serialNum;
@@ -127,6 +129,25 @@
     }
 
     return self;
+}
+
+- (BOOL)applyModeWithWidth:(uint32_t)width height:(uint32_t)height {
+    if (!_display) return NO;
+    CGVirtualDisplaySettings *settings = [[CGVirtualDisplaySettings alloc] init];
+    settings.hiDPI = (_scaleFactor > 1) ? 1 : 0;
+    CGVirtualDisplayMode *mode = [[CGVirtualDisplayMode alloc] initWithWidth:width
+                                                                      height:height
+                                                                 refreshRate:60.0];
+    settings.modes = @[mode];
+    BOOL success = [_display applySettings:settings];
+    if (success) {
+        _logicalSize = CGSizeMake(width, height);
+        _physicalSize = CGSizeMake(width * _scaleFactor, height * _scaleFactor);
+        NSLog(@"[Miroo] Successfully applied mode %ux%u to virtual display ID %u", width, height, _displayID);
+    } else {
+        NSLog(@"[Miroo] ERROR: Failed to apply mode %ux%u to virtual display ID %u", width, height, _displayID);
+    }
+    return success;
 }
 
 - (BOOL)isValid {
