@@ -15,20 +15,22 @@ public enum MirooMessageType: UInt8, Sendable, CustomStringConvertible {
     case streamConfig = 3
     case ready        = 4
     case videoFrame   = 5
-    case ping         = 6
-    case pong         = 7
-    case goodbye      = 8
+    case ping               = 6
+    case pong               = 7
+    case goodbye            = 8
+    case displayOrientation = 9
 
     public var description: String {
         switch self {
-        case .hello:        return "HELLO"
-        case .displayInfo:  return "DISPLAY_INFO"
-        case .streamConfig: return "STREAM_CONFIG"
-        case .ready:        return "READY"
-        case .videoFrame:   return "VIDEO_FRAME"
-        case .ping:         return "PING"
-        case .pong:         return "PONG"
-        case .goodbye:      return "GOODBYE"
+        case .hello:              return "HELLO"
+        case .displayInfo:        return "DISPLAY_INFO"
+        case .streamConfig:       return "STREAM_CONFIG"
+        case .ready:              return "READY"
+        case .videoFrame:         return "VIDEO_FRAME"
+        case .ping:               return "PING"
+        case .pong:               return "PONG"
+        case .goodbye:            return "GOODBYE"
+        case .displayOrientation: return "DISPLAY_ORIENTATION"
         }
     }
 }
@@ -221,19 +223,53 @@ public struct DisplayInfoPayload: Codable, Sendable {
     }
 }
 
+// MARK: - Orientation Support
+public enum MirooOrientation: String, Codable, Sendable {
+    case portrait
+    case landscape
+}
+
+public struct DisplayOrientationPayload: Codable, Sendable {
+    public let orientation: MirooOrientation
+    public let width: Int
+    public let height: Int
+
+    public init(orientation: MirooOrientation, width: Int = 1170, height: Int = 2532) {
+        self.orientation = orientation
+        self.width = width
+        self.height = height
+    }
+}
+
 public struct StreamConfigPayload: Codable, Sendable {
     public let codec: String   // "H264"
     public let width: Int
     public let height: Int
     public let fps: Int
     public let bitrate: Int
+    public let orientation: MirooOrientation
 
-    public init(codec: String = "H264", width: Int, height: Int, fps: Int = 60, bitrate: Int = 8_000_000) {
+    public init(codec: String = "H264", width: Int, height: Int, fps: Int = 60, bitrate: Int = 8_000_000, orientation: MirooOrientation = .portrait) {
         self.codec = codec
         self.width = width
         self.height = height
         self.fps = fps
         self.bitrate = bitrate
+        self.orientation = orientation
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case codec, width, height, fps, bitrate, orientation
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        codec = try container.decode(String.self, forKey: .codec)
+        width = try container.decode(Int.self, forKey: .width)
+        height = try container.decode(Int.self, forKey: .height)
+        fps = try container.decode(Int.self, forKey: .fps)
+        bitrate = try container.decode(Int.self, forKey: .bitrate)
+        orientation = try container.decodeIfPresent(MirooOrientation.self, forKey: .orientation) ?? (width > height ? .landscape : .portrait)
     }
 }
 
@@ -310,10 +346,16 @@ extension MirooMessage {
         return MirooMessage(type: .displayInfo, payload: data)
     }
 
-    public static func streamConfig(codec: String = "H264", width: Int, height: Int, fps: Int = 60, bitrate: Int = 8_000_000) -> MirooMessage {
-        let payload = StreamConfigPayload(codec: codec, width: width, height: height, fps: fps, bitrate: bitrate)
+    public static func streamConfig(codec: String = "H264", width: Int, height: Int, fps: Int = 60, bitrate: Int = 8_000_000, orientation: MirooOrientation = .portrait) -> MirooMessage {
+        let payload = StreamConfigPayload(codec: codec, width: width, height: height, fps: fps, bitrate: bitrate, orientation: orientation)
         let data = (try? JSONEncoder().encode(payload)) ?? Data()
         return MirooMessage(type: .streamConfig, payload: data)
+    }
+
+    public static func displayOrientation(orientation: MirooOrientation, width: Int = 1170, height: Int = 2532) -> MirooMessage {
+        let payload = DisplayOrientationPayload(orientation: orientation, width: width, height: height)
+        let data = (try? JSONEncoder().encode(payload)) ?? Data()
+        return MirooMessage(type: .displayOrientation, payload: data)
     }
 
     public static func ready(status: String = "ready") -> MirooMessage {

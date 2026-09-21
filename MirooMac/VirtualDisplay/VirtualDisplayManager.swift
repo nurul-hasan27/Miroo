@@ -46,6 +46,7 @@ public final class VirtualDisplayManager {
 
     private(set) var bridge: CGVirtualDisplayBridge?
     private(set) var isCreated = false
+    public private(set) var currentOrientation: MirooOrientation = .portrait
 
     public var displayID: CGDirectDisplayID {
         return bridge?.displayID ?? 0
@@ -54,6 +55,36 @@ public final class VirtualDisplayManager {
     public var isActive: Bool {
         guard let b = bridge, b.isValid else { return false }
         return CGDisplayIsActive(b.displayID) != 0
+    }
+
+    /// Dynamically reconfigures the existing virtual display for portrait or landscape orientation.
+    @discardableResult
+    public func setOrientation(_ orientation: MirooOrientation) -> Bool {
+        guard orientation != currentOrientation else { return true }
+        guard let b = bridge, b.displayID != 0 else { return false }
+
+        let targetLogW: UInt32
+        let targetLogH: UInt32
+        if orientation == .landscape {
+            targetLogW = Self.logicalHeight // 1266
+            targetLogH = Self.logicalWidth  // 585
+        } else {
+            targetLogW = Self.logicalWidth  // 585
+            targetLogH = Self.logicalHeight // 1266
+        }
+
+        print("[Miroo] Switching virtual display to \(orientation) (\(targetLogW)x\(targetLogH) logical)...")
+        let ok = b.applyMode(withWidth: targetLogW, height: targetLogH)
+        if ok {
+            self.currentOrientation = orientation
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.2))
+            detachFromMirrorAndPositionBesidePrimary()
+            print("[Miroo] Virtual display successfully switched to \(orientation) (\(CGDisplayPixelsWide(b.displayID))x\(CGDisplayPixelsHigh(b.displayID)) physical).")
+            return true
+        } else {
+            print("[Miroo] ERROR: Failed to apply \(orientation) mode to virtual display.")
+            return false
+        }
     }
 
     // MARK: - Lifecycle
