@@ -43,6 +43,7 @@ public final class MirooReceiver: @unchecked Sendable {
     // Callbacks
     public var onConnected: ((String) -> Void)?
     public var onDisconnected: ((Error?) -> Void)?
+    public var onStreamConfigUpdated: ((StreamConfigPayload) -> Void)?
     public var onFrameReceived: ((_ seq: UInt64, _ pts: Int64, _ isKeyframe: Bool, _ data: Data, _ timing: VideoFrameTiming?, _ netTransitMs: Double, _ jitterMs: Double) -> Void)?
 
     public init(clientName: String = "Miroo iPhone") {
@@ -127,6 +128,18 @@ public final class MirooReceiver: @unchecked Sendable {
         }
     }
 
+    /// Request dynamic orientation change on Mac virtual display
+    public func sendOrientation(_ orientation: MirooOrientation) {
+        queue.async { [weak self] in
+            guard let self = self, let conn = self.connection else { return }
+            let width: Int = (orientation == .landscape) ? 2532 : 1170
+            let height: Int = (orientation == .landscape) ? 1170 : 2532
+            let msg = MirooMessage.displayOrientation(orientation: orientation, width: width, height: height)
+            conn.send(message: msg)
+            print("[Miroo Receiver] Sent DISPLAY_ORIENTATION: \(orientation.rawValue) (\(width)x\(height))")
+        }
+    }
+
     // MARK: - Handshake Flow
 
     private func handleMessage(_ message: MirooMessage, from conn: MirooConnection) {
@@ -147,21 +160,26 @@ public final class MirooReceiver: @unchecked Sendable {
 
         case .streamConfig:
             if let config = message.decodePayload(StreamConfigPayload.self) {
+                let isUpdate = (self.streamConfig != nil)
                 self.streamConfig = config
                 print("")
                 print("===========================================")
-                print(" Connected to Miroo Mac")
-                print(" Stream: \(config.width)x\(config.height) @ \(config.fps) FPS (\(config.codec))")
+                print(" Stream Config \(isUpdate ? "Updated" : "Initialized")")
+                print(" Dimensions: \(config.width)x\(config.height) (\(config.orientation))")
+                print(" Frame Rate: \(config.fps) FPS (\(config.codec))")
                 print(" Bitrate: \(Double(config.bitrate) / 1_000_000.0) Mbps")
                 print("===========================================")
                 print("")
 
-                print("[Miroo Receiver] Sending READY...")
-                conn.send(message: MirooMessage.ready())
-                conn.transitionToStreaming()
+                if !isUpdate {
+                    print("[Miroo Receiver] Sending READY...")
+                    conn.send(message: MirooMessage.ready())
+                    conn.transitionToStreaming()
 
-                // Start 250ms ping loop for precise RTT measurement
-                self.startPingTimer(conn: conn)
+                    // Start 250ms ping loop for precise RTT measurement
+                    self.startPingTimer(conn: conn)
+                }
+                onStreamConfigUpdated?(config)
             }
 
         case .videoFrame:

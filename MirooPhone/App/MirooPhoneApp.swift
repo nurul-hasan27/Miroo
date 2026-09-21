@@ -31,6 +31,7 @@ final class ReceiverViewModel: ObservableObject {
     @Published var displayDetails: String = "No display connected"
     @Published var streamDetails: String = "No stream active"
     @Published var isStreaming: Bool = false
+    @Published var currentOrientation: MirooOrientation = .portrait
     @Published var showHUD: Bool = true
     @Published var diagnostics: FrameDiagnostics = FrameDiagnostics()
 
@@ -39,6 +40,7 @@ final class ReceiverViewModel: ObservableObject {
     let renderer: MetalRenderer? = MetalRenderer()
 
     private var isStarted = false
+    private var lastRequestedOrientation: MirooOrientation? = nil
 
     init() {
         setupPipeline()
@@ -65,12 +67,25 @@ final class ReceiverViewModel: ObservableObject {
         }
     }
 
+    func updateOrientationIfNeeded(_ orientation: MirooOrientation) {
+        guard orientation != lastRequestedOrientation else { return }
+        lastRequestedOrientation = orientation
+        currentOrientation = orientation
+        print("[Miroo App] Requesting display orientation switch to: \(orientation.rawValue)")
+        receiver.sendOrientation(orientation)
+    }
+
     private func setupPipeline() {
         // 1. Connection Callbacks
         receiver.onConnected = { [weak self] hostName in
             Task { @MainActor in
                 self?.status = "Connected"
                 self?.connectedHost = hostName
+                // If device is already in landscape upon connection, sync with Mac
+                if let cur = self?.currentOrientation, cur != .portrait {
+                    print("[Miroo App] Connected while in \(cur.rawValue) -> notifying Mac")
+                    self?.receiver.sendOrientation(cur)
+                }
             }
         }
 
@@ -80,6 +95,16 @@ final class ReceiverViewModel: ObservableObject {
                 self?.connectedHost = nil
                 self?.isStreaming = false
                 self?.decoder.invalidate()
+            }
+        }
+
+        // Stream config updates (initial or runtime orientation change)
+        receiver.onStreamConfigUpdated = { [weak self] config in
+            Task { @MainActor in
+                self?.streamDetails = "\(config.width)x\(config.height) (\(config.orientation.rawValue)) @ \(config.fps) FPS (\(config.codec))"
+                if let orientation = MirooOrientation(rawValue: config.orientation.rawValue) {
+                    self?.currentOrientation = orientation
+                }
             }
         }
 
@@ -134,119 +159,137 @@ struct ReceiverContentView: View {
     @ObservedObject var viewModel: ReceiverViewModel
 
     var body: some View {
-        Group {
-            if viewModel.isStreaming, let renderer = viewModel.renderer {
-                // Live Metal display with low-latency HUD overlay
-                ZStack(alignment: .topLeading) {
-                    Color.black.ignoresSafeArea()
+        GeometryReader { geo in
+            let isLandscape = geo.size.width > geo.size.height
+            let detectedOrientation: MirooOrientation = isLandscape ? .landscape : .portrait
 
-                    MirooMetalView(renderer: renderer)
-                        .ignoresSafeArea()
-                        .onTapGesture {
-                            withAnimation(.easeInOut(duration: 0.2)) {
-                                viewModel.showHUD.toggle()
+            Group {
+                if viewModel.isStreaming, let renderer = viewModel.renderer {
+                    // Live Metal display with low-latency HUD overlay
+                    ZStack(alignment: .topLeading) {
+                        Color.black.ignoresSafeArea()
+
+                        MirooMetalView(renderer: renderer)
+                            .ignoresSafeArea()
+                            .onTapGesture {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    viewModel.showHUD.toggle()
+                                }
                             }
+
+                        if viewModel.showHUD {
+                            DiagnosticHUDView(d: viewModel.diagnostics, orientation: viewModel.currentOrientation) {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    viewModel.showHUD = false
+                                }
+                            }
+                            .padding(.top, isLandscape ? 20 : 48)
+                            .padding(.leading, isLandscape ? 44 : 16)
+                            .transition(.opacity)
                         }
 
-                    if viewModel.showHUD {
-                        DiagnosticHUDView(d: viewModel.diagnostics) {
-                            withAnimation(.easeInOut(duration: 0.2)) {
-                                viewModel.showHUD = false
+                        // Disconnect button in top-right
+                        VStack {
+                            HStack {
+                                Spacer()
+                                Button(action: { viewModel.toggleConnection() }) {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.title2)
+                                        .foregroundColor(.white.opacity(0.8))
+                                        .padding(8)
+                                        .background(.ultraThinMaterial)
+                                        .clipShape(Circle())
+                                }
+                                .padding(.top, isLandscape ? 20 : 48)
+                                .padding(.trailing, isLandscape ? 44 : 16)
                             }
-                        }
-                        .padding(.top, 48)
-                        .padding(.leading, 16)
-                        .transition(.opacity)
-                    }
-
-                    // Disconnect button in top-right
-                    VStack {
-                        HStack {
                             Spacer()
-                            Button(action: { viewModel.toggleConnection() }) {
-                                Image(systemName: "xmark.circle.fill")
-                                    .font(.title2)
-                                    .foregroundColor(.white.opacity(0.8))
-                                    .padding(8)
-                                    .background(.ultraThinMaterial)
-                                    .clipShape(Circle())
-                            }
-                            .padding(.top, 48)
-                            .padding(.trailing, 16)
                         }
-                        Spacer()
                     }
-                }
-            } else {
-                // Configuration and connection screen
-                NavigationStack {
-                    List {
-                        Section("Connection Status") {
-                            HStack {
-                                Text("Status")
-                                Spacer()
-                                Text(viewModel.status)
-                                    .foregroundColor(viewModel.status.contains("Streaming") ? .green : .secondary)
-                                    .bold()
-                            }
-                            if let host = viewModel.connectedHost {
+                } else {
+                    // Configuration and connection screen
+                    NavigationStack {
+                        List {
+                            Section("Connection Status") {
                                 HStack {
-                                    Text("Host Mac")
+                                    Text("Status")
                                     Spacer()
-                                    Text(host).foregroundColor(.primary)
-                                }
-                            }
-                        }
-
-                        Section("Display & Stream Config") {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("Display").font(.caption).foregroundColor(.secondary)
-                                Text(viewModel.displayDetails).font(.subheadline)
-                            }
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("Stream").font(.caption).foregroundColor(.secondary)
-                                Text(viewModel.streamDetails).font(.subheadline)
-                            }
-                        }
-
-                        Section("Performance Telemetry") {
-                            HStack {
-                                Text("Pipeline Latency")
-                                Spacer()
-                                Text(String(format: "%.1f ms", viewModel.diagnostics.pipelineMs)).bold()
-                            }
-                            HStack {
-                                Text("Framerate")
-                                Spacer()
-                                Text(String(format: "%.1f FPS", viewModel.diagnostics.fps)).bold()
-                            }
-                            HStack {
-                                Text("Frame Jitter")
-                                Spacer()
-                                Text(String(format: "%.1f ms", viewModel.diagnostics.jitterMs)).bold()
-                            }
-                            HStack {
-                                Text("Throughput")
-                                Spacer()
-                                Text(String(format: "%.1f Mbps", viewModel.diagnostics.bitrateMbps)).bold()
-                            }
-                        }
-
-                        Section {
-                            Button(action: { viewModel.toggleConnection() }) {
-                                HStack {
-                                    Spacer()
-                                    Text(viewModel.status.contains("Streaming") || viewModel.status.contains("Connected") ? "Disconnect" : "Start Receiving")
+                                    Text(viewModel.status)
+                                        .foregroundColor(viewModel.status.contains("Streaming") ? .green : .secondary)
                                         .bold()
-                                        .foregroundColor(.white)
+                                }
+                                if let host = viewModel.connectedHost {
+                                    HStack {
+                                        Text("Host Mac")
+                                        Spacer()
+                                        Text(host).foregroundColor(.primary)
+                                    }
+                                }
+                                HStack {
+                                    Text("Active Orientation")
                                     Spacer()
+                                    Text(viewModel.currentOrientation.rawValue.capitalized)
+                                        .foregroundColor(.secondary)
                                 }
                             }
-                            .listRowBackground(Color.blue)
+
+                            Section("Display & Stream Config") {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Display").font(.caption).foregroundColor(.secondary)
+                                    Text(viewModel.displayDetails).font(.subheadline)
+                                }
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Stream").font(.caption).foregroundColor(.secondary)
+                                    Text(viewModel.streamDetails).font(.subheadline)
+                                }
+                            }
+
+                            Section("Performance Telemetry") {
+                                HStack {
+                                    Text("Pipeline Latency")
+                                    Spacer()
+                                    Text(String(format: "%.1f ms", viewModel.diagnostics.pipelineMs)).bold()
+                                }
+                                HStack {
+                                    Text("Framerate")
+                                    Spacer()
+                                    Text(String(format: "%.1f FPS", viewModel.diagnostics.fps)).bold()
+                                }
+                                HStack {
+                                    Text("Frame Jitter")
+                                    Spacer()
+                                    Text(String(format: "%.1f ms", viewModel.diagnostics.jitterMs)).bold()
+                                }
+                                HStack {
+                                    Text("Throughput")
+                                    Spacer()
+                                    Text(String(format: "%.1f Mbps", viewModel.diagnostics.bitrateMbps)).bold()
+                                }
+                            }
+
+                            Section {
+                                Button(action: { viewModel.toggleConnection() }) {
+                                    HStack {
+                                        Spacer()
+                                        Text(viewModel.status.contains("Streaming") || viewModel.status.contains("Connected") ? "Disconnect" : "Start Receiving")
+                                            .bold()
+                                            .foregroundColor(.white)
+                                        Spacer()
+                                    }
+                                }
+                                .listRowBackground(Color.blue)
+                            }
                         }
+                        .navigationTitle("Miroo Receiver")
                     }
-                    .navigationTitle("Miroo Receiver")
                 }
+            }
+            .onAppear {
+                viewModel.updateOrientationIfNeeded(detectedOrientation)
+            }
+            .onChange(of: geo.size) { newSize in
+                let newOrientation: MirooOrientation = (newSize.width > newSize.height) ? .landscape : .portrait
+                viewModel.updateOrientationIfNeeded(newOrientation)
             }
         }
     }
@@ -256,6 +299,7 @@ struct ReceiverContentView: View {
 
 struct DiagnosticHUDView: View {
     let d: FrameDiagnostics
+    var orientation: MirooOrientation = .portrait
     let onDismiss: () -> Void
 
     var body: some View {
@@ -274,6 +318,8 @@ struct DiagnosticHUDView: View {
             .padding(.bottom, 2)
 
             Divider().background(Color.white.opacity(0.25))
+
+            hudRow(label: "Mode", value: "\(orientation.rawValue.capitalized)")
 
             hudRow(label: "Capture", value: String(format: "%.1f ms", d.captureMs))
             hudRow(label: "Encode", value: String(format: "%.1f ms", d.encodeMs))
