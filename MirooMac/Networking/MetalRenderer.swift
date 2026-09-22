@@ -274,6 +274,7 @@ public final class MetalRenderer: NSObject, MTKViewDelegate, @unchecked Sendable
     public var currentJitterMs: Double = 0.5
     public var currentBitrateMbps: Double = 15.0
     public var onDiagnosticsUpdate: ((FrameDiagnostics) -> Void)?
+    public var onBenchmarkReportGenerated: ((PipelineBenchmarkReport) -> Void)?
 
     private var avgCaptureMs: Double = 1.5
     private var avgEncodeMs: Double = 3.2
@@ -424,6 +425,7 @@ public final class MetalRenderer: NSObject, MTKViewDelegate, @unchecked Sendable
         os_unfair_lock_lock(&lock)
         if latestFrame != nil {
             totalDisplayDrops += 1
+            PipelineBenchmark.shared.recordDisplayDrop()
         }
         latestFrame = frame
         os_unfair_lock_unlock(&lock)
@@ -601,18 +603,86 @@ public final class MetalRenderer: NSObject, MTKViewDelegate, @unchecked Sendable
         // 5. Telemetry & Performance Tracking
         guard isNewFrame else { return }
 
-        let renderLatencyMs = (CACurrentMediaTime() - renderStartTime) * 1000.0
+        let renderNow = CACurrentMediaTime()
+        let renderNowNs = UInt64(renderNow * 1_000_000_000.0)
+        let renderLatencyMs = (renderNow - renderStartTime) * 1000.0
         totalFramesRendered += 1
         intervalRenderedFrames += 1
         intervalRenderLatencySum += renderLatencyMs
 
+        // Calculate Phase 7 Stage Latencies
+        var capToEncMs = frame.captureMs
+        var encDurationMs = frame.encodeMs
+        var encToNetSendMs = frame.queueMs
+        let netTransitMs = frame.networkMs
+        var netRecvToDecMs = 0.5
+        var decDurationMs = frame.decodeDurationMs
+        var decToRenderMs = max(0.1, renderLatencyMs)
+
+        if let t = frame.timing, t.captureTimestampNs > 0, t.encodeStartTimestampNs >= t.captureTimestampNs {
+            capToEncMs = Double(t.encodeStartTimestampNs - t.captureTimestampNs) / 1_000_000.0
+        }
+        if let t = frame.timing, t.encodeStartTimestampNs > 0, t.encodeCompleteTimestampNs >= t.encodeStartTimestampNs {
+            encDurationMs = Double(t.encodeCompleteTimestampNs - t.encodeStartTimestampNs) / 1_000_000.0
+        } else if let t = frame.timing, t.encodeDurationUs > 0 {
+            encDurationMs = Double(t.encodeDurationUs) / 1000.0
+        }
+        if let t = frame.timing, t.encodeCompleteTimestampNs > 0, t.networkSendTimestampNs >= t.encodeCompleteTimestampNs {
+            encToNetSendMs = Double(t.networkSendTimestampNs - t.encodeCompleteTimestampNs) / 1_000_000.0
+        } else if let t = frame.timing, t.macQueueDelayUs > 0 {
+            encToNetSendMs = Double(t.macQueueDelayUs) / 1000.0
+        }
+
+        if frame.networkReceiveTimestampNs > 0, frame.decodeStartTimestampNs >= frame.networkReceiveTimestampNs {
+            netRecvToDecMs = Double(frame.decodeStartTimestampNs - frame.networkReceiveTimestampNs) / 1_000_000.0
+        }
+        if frame.decodeStartTimestampNs > 0, frame.decodeCompleteTimestampNs >= frame.decodeStartTimestampNs {
+            decDurationMs = Double(frame.decodeCompleteTimestampNs - frame.decodeStartTimestampNs) / 1_000_000.0
+        }
+        if frame.decodeCompleteTimestampNs > 0, renderNowNs >= frame.decodeCompleteTimestampNs {
+            decToRenderMs = Double(renderNowNs - frame.decodeCompleteTimestampNs) / 1_000_000.0
+        }
+
+        let stageSumMs = capToEncMs + encDurationMs + encToNetSendMs + netTransitMs + netRecvToDecMs + decDurationMs + decToRenderMs
+
+        // Frame age and Glass-to-render (total latency from capture to glass)
+        let frameAgeMs: Double
+        if let t = frame.timing, t.captureTimestampNs > 0 {
+            let capOnPhoneNs = Int64(t.captureTimestampNs) - PipelineBenchmark.shared.clockOffsetNs
+            let directAgeMs = Double(Int64(renderNowNs) - capOnPhoneNs) / 1_000_000.0
+            if directAgeMs > 0.0 && directAgeMs < 1000.0 {
+                frameAgeMs = directAgeMs
+            } else {
+                frameAgeMs = stageSumMs
+            }
+        } else {
+            frameAgeMs = stageSumMs
+        }
+        let glassToRenderMs = frameAgeMs
+
+        let frameMetrics = PipelineFrameMetrics(
+            sequence: frame.sequence,
+            isKeyframe: frame.isKeyframe,
+            captureToEncodeMs: capToEncMs,
+            encodeDurationMs: encDurationMs,
+            encodeToNetSendMs: encToNetSendMs,
+            networkTransitMs: netTransitMs,
+            networkReceiveToDecodeMs: netRecvToDecMs,
+            decodeDurationMs: decDurationMs,
+            decodeToRenderMs: decToRenderMs,
+            glassToRenderMs: glassToRenderMs,
+            frameAgeMs: frameAgeMs,
+            queueDepth: 1
+        )
+        PipelineBenchmark.shared.recordFrameRendered(metrics: frameMetrics)
+
         // Update exponential moving averages for smooth HUD display
-        avgCaptureMs = 0.9 * avgCaptureMs + 0.1 * max(0.5, frame.captureMs)
-        avgEncodeMs = 0.9 * avgEncodeMs + 0.1 * max(1.0, frame.encodeMs)
-        avgQueueMs = 0.9 * avgQueueMs + 0.1 * max(0.1, frame.queueMs)
-        avgNetworkMs = 0.9 * avgNetworkMs + 0.1 * max(0.5, frame.networkMs)
-        avgDecodeMs = 0.9 * avgDecodeMs + 0.1 * max(1.0, frame.decodeDurationMs)
-        avgMetalMs = 0.9 * avgMetalMs + 0.1 * max(0.1, renderLatencyMs)
+        avgCaptureMs = 0.9 * avgCaptureMs + 0.1 * max(0.2, capToEncMs)
+        avgEncodeMs = 0.9 * avgEncodeMs + 0.1 * max(0.5, encDurationMs)
+        avgQueueMs = 0.9 * avgQueueMs + 0.1 * max(0.1, encToNetSendMs)
+        avgNetworkMs = 0.9 * avgNetworkMs + 0.1 * max(0.2, netTransitMs)
+        avgDecodeMs = 0.9 * avgDecodeMs + 0.1 * max(0.5, decDurationMs)
+        avgMetalMs = 0.9 * avgMetalMs + 0.1 * max(0.1, decToRenderMs)
 
         let pipelineSum = avgCaptureMs + avgEncodeMs + avgQueueMs + avgNetworkMs + avgDecodeMs + avgMetalMs
         lastGlassToGlassEstimateMs = pipelineSum
@@ -629,6 +699,7 @@ public final class MetalRenderer: NSObject, MTKViewDelegate, @unchecked Sendable
                 intervalRenderedFrames = 0
                 intervalRenderLatencySum = 0
 
+                let benchReport = PipelineBenchmark.shared.generateReport()
                 let totalExpected = totalFramesRendered + totalDisplayDrops
                 let dropPct = totalExpected > 0 ? (Double(totalDisplayDrops) / Double(totalExpected)) * 100.0 : 0.0
 
@@ -664,11 +735,30 @@ public final class MetalRenderer: NSObject, MTKViewDelegate, @unchecked Sendable
                     safeAreaInsetsStr: safeAreaStr,
                     usableViewportStr: usableStr,
                     videoSizeStr: videoStr,
-                    renderRectStr: renderStr
+                    renderRectStr: renderStr,
+                    p50GlassToRenderMs: benchReport.glassToRender.p50,
+                    p95GlassToRenderMs: benchReport.glassToRender.p95,
+                    p99GlassToRenderMs: benchReport.glassToRender.p99,
+                    p50FrameAgeMs: benchReport.frameAge.p50,
+                    p95FrameAgeMs: benchReport.frameAge.p95,
+                    p99FrameAgeMs: benchReport.frameAge.p99,
+                    captureFps: benchReport.fps.captureFPS,
+                    encodeFps: benchReport.fps.encodeFPS,
+                    receiveFps: benchReport.fps.receiveFPS,
+                    decodeFps: benchReport.fps.decodeFPS,
+                    renderFps: benchReport.fps.renderFPS,
+                    serverDrops: benchReport.counters.serverQueueDrops,
+                    sequenceGaps: benchReport.counters.sequenceGaps,
+                    displayDrops: benchReport.counters.displayDrops,
+                    staleDrops: benchReport.counters.staleDrops
                 )
 
                 onDiagnosticsUpdate?(diag)
                 onTelemetryUpdate?(currentFps, averageRenderLatencyMs, avgDecodeMs, pipelineSum)
+
+                if totalFramesRendered % 120 == 0 && totalFramesRendered > 0 {
+                    onBenchmarkReportGenerated?(benchReport)
+                }
             }
         }
     }

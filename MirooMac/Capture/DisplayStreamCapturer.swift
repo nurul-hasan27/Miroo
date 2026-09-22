@@ -11,6 +11,9 @@ import CoreMedia
 import CoreVideo
 import ScreenCaptureKit
 import QuartzCore
+#if canImport(MirooNetworking)
+import MirooNetworking
+#endif
 
 public enum CapturerError: LocalizedError {
     case permissionDenied
@@ -51,8 +54,9 @@ public final class DisplayStreamCapturer: NSObject, SCStreamOutput, SCStreamDele
     private var lastFpsTimestamp: CFTimeInterval = 0
     private var isCapturing = false
 
-    /// Optional callback invoked on each captured frame (for Phase 3 encoding).
-    public var onFrameCaptured: ((CVPixelBuffer, CMTime) -> Void)?
+    /// Optional callback invoked on each captured frame (for Phase 3 encoding and Phase 7 benchmark).
+    /// Parameters: pixelBuffer, presentationTime, captureTimestampNs
+    public var onFrameCaptured: ((CVPixelBuffer, CMTime, UInt64) -> Void)?
 
     // MARK: - Initialization
 
@@ -241,8 +245,14 @@ public final class DisplayStreamCapturer: NSObject, SCStreamOutput, SCStreamDele
             print("[Miroo] Frame size: \(width)x\(height)")
         }
 
-        // Pass to subscriber (e.g. Phase 3 encoder)
-        onFrameCaptured?(pixelBuffer, presentationTime)
+        // Calculate exact capture timestamp (in host nanoseconds using monotonic CACurrentMediaTime)
+        let captureTimestampNs = UInt64(CACurrentMediaTime() * 1_000_000_000.0)
+
+        // Record Stage 1 (CAPTURE) in benchmark
+        PipelineBenchmark.shared.recordCapture(timestampNs: captureTimestampNs)
+
+        // Pass to subscriber (e.g. VideoEncoder)
+        onFrameCaptured?(pixelBuffer, presentationTime, captureTimestampNs)
     }
 
     // MARK: - SCStreamDelegate

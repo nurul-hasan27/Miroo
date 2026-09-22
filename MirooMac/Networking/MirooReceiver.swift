@@ -44,7 +44,7 @@ public final class MirooReceiver: @unchecked Sendable {
     public var onConnected: ((String) -> Void)?
     public var onDisconnected: ((Error?) -> Void)?
     public var onStreamConfigUpdated: ((StreamConfigPayload) -> Void)?
-    public var onFrameReceived: ((_ seq: UInt64, _ pts: Int64, _ isKeyframe: Bool, _ data: Data, _ timing: VideoFrameTiming?, _ netTransitMs: Double, _ jitterMs: Double) -> Void)?
+    public var onFrameReceived: ((_ seq: UInt64, _ pts: Int64, _ isKeyframe: Bool, _ data: Data, _ timing: VideoFrameTiming?, _ networkReceiveTimestampNs: UInt64, _ netTransitMs: Double, _ jitterMs: Double) -> Void)?
 
     public init(clientName: String = "Miroo iPhone") {
         self.clientName = clientName
@@ -65,13 +65,21 @@ public final class MirooReceiver: @unchecked Sendable {
             self.browser.onServicesUpdated = { [weak self] services in
                 guard let self = self else { return }
                 self.queue.async {
-                    if self.connection == nil, let first = services.first {
+                    if (self.connection == nil || self.connection?.state == .disconnected),
+                       let first = services.first {
                         print("[Miroo Receiver] Found Miroo host: '\(first.name)'. Connecting...")
                         self.connect(to: first.endpoint)
                     }
                 }
             }
             self.browser.start()
+
+            // Check if service was already discovered
+            if (self.connection == nil || self.connection?.state == .disconnected),
+               let cached = self.browser.discoveredServices.first {
+                print("[Miroo Receiver] Using previously discovered Miroo host: '\(cached.name)'. Connecting...")
+                self.connect(to: cached.endpoint)
+            }
         }
     }
 
@@ -127,6 +135,15 @@ public final class MirooReceiver: @unchecked Sendable {
             self.connection = nil
             self.streamConfig = nil
             print("[Miroo Receiver] Stopped.")
+        }
+    }
+
+    /// Sends a serialized benchmark report back to the Mac server.
+    public func sendBenchmarkReport(_ jsonString: String) {
+        queue.async { [weak self] in
+            guard let self = self, let conn = self.connection, conn.state == .streaming else { return }
+            let msg = MirooMessage.benchmarkReport(jsonString)
+            conn.send(message: msg)
         }
     }
 
@@ -214,11 +231,18 @@ public final class MirooReceiver: @unchecked Sendable {
                 let rttNs = max(0, nowNs - pong.clientTimestamp)
                 let rttMs = Double(rttNs) / 1_000_000.0
                 if minRTTMs <= 0 || rttMs < minRTTMs {
-                    minRTTMs = max(1.0, rttMs)
+                    minRTTMs = max(0.5, rttMs)
                 } else {
                     minRTTMs = 0.95 * minRTTMs + 0.05 * min(25.0, rttMs)
                 }
                 smoothedRTTMs = minRTTMs
+
+                // Phase 7: Clock synchronization update for cross-device glass-to-render accuracy
+                PipelineBenchmark.shared.updateClockOffset(
+                    clientTimestamp: pong.clientTimestamp,
+                    serverTimestamp: pong.serverTimestamp,
+                    receiveTimestamp: nowNs
+                )
             }
 
         case .ping:
@@ -238,12 +262,14 @@ public final class MirooReceiver: @unchecked Sendable {
     // MARK: - Video Frame Processing & Verification
 
     private func handleVideoFrame(header: MirooHeader, payload: Data) {
+        let networkReceiveTimestampNs = UInt64(CACurrentMediaTime() * 1_000_000_000.0)
         let seq = header.sequence
         let pts = header.pts
         let isKeyframe = header.isKeyframe
         let size = payload.count
 
         metrics.recordFrameReceived(bytes: MirooHeader.headerSize + size)
+        PipelineBenchmark.shared.recordFrameReceived(sequence: seq)
 
         // Parse timing prefix if present
         let (timing, annexBData) = VideoFrameTiming.parse(from: payload)
@@ -256,12 +282,24 @@ public final class MirooReceiver: @unchecked Sendable {
         }
         lastFrameArrivalTime = now
 
-        let netTransitMs = max(0.5, smoothedRTTMs / 2.0)
+        let netTransitMs: Double
+        if let t = timing, t.networkSendTimestampNs > 0 {
+            let macSendOnPhoneNs = Int64(t.networkSendTimestampNs) - PipelineBenchmark.shared.clockOffsetNs
+            let diffMs = Double(Int64(networkReceiveTimestampNs) - macSendOnPhoneNs) / 1_000_000.0
+            if diffMs > 0.05 && diffMs < 200.0 {
+                netTransitMs = diffMs
+            } else {
+                netTransitMs = max(0.5, smoothedRTTMs / 2.0)
+            }
+        } else {
+            netTransitMs = max(0.5, smoothedRTTMs / 2.0)
+        }
 
         // Verify sequence continuity
         if lastSequenceNumber > 0 && seq > lastSequenceNumber + 1 {
             let gap = seq - (lastSequenceNumber + 1)
             totalDetectedGaps += gap
+            PipelineBenchmark.shared.recordSequenceGap(gap: gap)
             print("[Miroo Receiver] Sequence gap detected! Expected: \(lastSequenceNumber + 1), got: \(seq) (dropped: \(gap) frames)")
         }
         lastSequenceNumber = seq
@@ -272,7 +310,7 @@ public final class MirooReceiver: @unchecked Sendable {
             framesLoggedCount += 1
         }
 
-        onFrameReceived?(seq, pts, isKeyframe, annexBData, timing, netTransitMs, smoothedJitterMs)
+        onFrameReceived?(seq, pts, isKeyframe, annexBData, timing, networkReceiveTimestampNs, netTransitMs, smoothedJitterMs)
     }
 
     // MARK: - Ping Timer

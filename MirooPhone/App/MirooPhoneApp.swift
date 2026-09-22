@@ -145,7 +145,7 @@ final class ReceiverViewModel: ObservableObject {
         }
 
         // 2. High-performance frame ingestion without per-frame MainActor dispatch
-        receiver.onFrameReceived = { [weak self] seq, pts, isKeyframe, data, timing, netTransitMs, jitterMs in
+        receiver.onFrameReceived = { [weak self] seq, pts, isKeyframe, data, timing, netRecvNs, netTransitMs, jitterMs in
             guard let self = self else { return }
             self.renderer?.currentJitterMs = jitterMs
             self.renderer?.currentBitrateMbps = self.receiver.metrics.snapshot().recvThroughputMbps
@@ -156,6 +156,7 @@ final class ReceiverViewModel: ObservableObject {
                 ptsNanoseconds: pts,
                 isKeyframeHint: isKeyframe,
                 timing: timing,
+                networkReceiveTimestampNs: netRecvNs,
                 networkTransitMs: netTransitMs,
                 jitterMs: jitterMs
             )
@@ -184,6 +185,13 @@ final class ReceiverViewModel: ObservableObject {
         renderer?.onDiagnosticsUpdate = { [weak self] diag in
             Task { @MainActor in
                 self?.diagnostics = diag
+            }
+        }
+
+        // Phase 7: Send periodic live benchmark reports back to Mac server for persistent logging
+        renderer?.onBenchmarkReportGenerated = { [weak self] report in
+            if let json = report.toJSONString() {
+                self?.receiver.sendBenchmarkReport(json)
             }
         }
     }
@@ -418,14 +426,20 @@ struct DiagnosticHUDView: View {
 
             Divider().background(Color.white.opacity(0.25))
 
-            hudRow(label: "Pipeline", value: String(format: "%.1f ms", d.pipelineMs), isHighlight: true)
+            hudRow(label: "Glass-to-Render", value: String(format: "%.1f ms", d.pipelineMs), isHighlight: true)
+            if d.p50GlassToRenderMs > 0 {
+                hudRow(label: "G2R p50/95/99", value: String(format: "%.0f/%.0f/%.0f ms", d.p50GlassToRenderMs, d.p95GlassToRenderMs, d.p99GlassToRenderMs))
+                hudRow(label: "Frame Age p50/95", value: String(format: "%.0f/%.0f ms", d.p50FrameAgeMs, d.p95FrameAgeMs))
+            }
 
             Divider().background(Color.white.opacity(0.25))
 
-            hudRow(label: "FPS", value: String(format: "%.1f", d.fps))
+            hudRow(label: "FPS (Ren/Cap)", value: String(format: "%.1f / %.1f", d.fps, d.captureFps > 0 ? d.captureFps : d.fps))
             hudRow(label: "Frame Jitter", value: String(format: "%.1f ms", d.jitterMs))
-            hudRow(label: "Dropped", value: String(format: "%.1f %%", d.dropPercentage))
-            hudRow(label: "Queue Depth", value: "\(d.queueDepth) frame\(d.queueDepth == 1 ? "" : "s")")
+            hudRow(label: "Drops (Stale)", value: "\(d.staleDrops) (\(String(format: "%.1f%%", d.dropPercentage)))")
+            if d.sequenceGaps > 0 {
+                hudRow(label: "Sequence Gaps", value: "\(d.sequenceGaps)")
+            }
             hudRow(label: "Bitrate", value: String(format: "%.1f Mbps", d.bitrateMbps))
 
             if !d.renderRectStr.isEmpty {

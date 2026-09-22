@@ -51,6 +51,23 @@ public struct FrameDiagnostics: Sendable {
     public var videoSizeStr: String
     public var renderRectStr: String
 
+    // Phase 7 Latency Benchmark & Glass-to-Render Metrics
+    public var p50GlassToRenderMs: Double
+    public var p95GlassToRenderMs: Double
+    public var p99GlassToRenderMs: Double
+    public var p50FrameAgeMs: Double
+    public var p95FrameAgeMs: Double
+    public var p99FrameAgeMs: Double
+    public var captureFps: Double
+    public var encodeFps: Double
+    public var receiveFps: Double
+    public var decodeFps: Double
+    public var renderFps: Double
+    public var serverDrops: UInt64
+    public var sequenceGaps: UInt64
+    public var displayDrops: UInt64
+    public var staleDrops: UInt64
+
     public init(
         captureMs: Double = 0.0,
         encodeMs: Double = 0.0,
@@ -83,7 +100,22 @@ public struct FrameDiagnostics: Sendable {
         safeAreaInsetsStr: String = "",
         usableViewportStr: String = "",
         videoSizeStr: String = "",
-        renderRectStr: String = ""
+        renderRectStr: String = "",
+        p50GlassToRenderMs: Double = 0.0,
+        p95GlassToRenderMs: Double = 0.0,
+        p99GlassToRenderMs: Double = 0.0,
+        p50FrameAgeMs: Double = 0.0,
+        p95FrameAgeMs: Double = 0.0,
+        p99FrameAgeMs: Double = 0.0,
+        captureFps: Double = 0.0,
+        encodeFps: Double = 0.0,
+        receiveFps: Double = 0.0,
+        decodeFps: Double = 0.0,
+        renderFps: Double = 0.0,
+        serverDrops: UInt64 = 0,
+        sequenceGaps: UInt64 = 0,
+        displayDrops: UInt64 = 0,
+        staleDrops: UInt64 = 0
     ) {
         self.captureMs = captureMs
         self.encodeMs = encodeMs
@@ -117,6 +149,21 @@ public struct FrameDiagnostics: Sendable {
         self.usableViewportStr = usableViewportStr
         self.videoSizeStr = videoSizeStr
         self.renderRectStr = renderRectStr
+        self.p50GlassToRenderMs = p50GlassToRenderMs
+        self.p95GlassToRenderMs = p95GlassToRenderMs
+        self.p99GlassToRenderMs = p99GlassToRenderMs
+        self.p50FrameAgeMs = p50FrameAgeMs
+        self.p95FrameAgeMs = p95FrameAgeMs
+        self.p99FrameAgeMs = p99FrameAgeMs
+        self.captureFps = captureFps
+        self.encodeFps = encodeFps
+        self.receiveFps = receiveFps
+        self.decodeFps = decodeFps
+        self.renderFps = renderFps
+        self.serverDrops = serverDrops
+        self.sequenceGaps = sequenceGaps
+        self.displayDrops = displayDrops
+        self.staleDrops = staleDrops
     }
 }
 
@@ -132,6 +179,16 @@ public struct DecodedVideoFrame: @unchecked Sendable {
     public let decodeDurationMs: Double
     public let captureTimestampNs: Int64
     public let decodedTimestamp: CFTimeInterval
+
+    // Phase 7 Stage Timestamps (Nanoseconds)
+    public let timing: VideoFrameTiming?
+    public let captureTimestampExactNs: UInt64
+    public let encodeStartTimestampNs: UInt64
+    public let encodeCompleteTimestampNs: UInt64
+    public let networkSendTimestampNs: UInt64
+    public let networkReceiveTimestampNs: UInt64
+    public let decodeStartTimestampNs: UInt64
+    public let decodeCompleteTimestampNs: UInt64
 
     public var width: Int {
         CVPixelBufferGetWidth(pixelBuffer)
@@ -152,7 +209,11 @@ public struct DecodedVideoFrame: @unchecked Sendable {
         networkMs: Double = 0.0,
         decodeDurationMs: Double = 0.0,
         captureTimestampNs: Int64 = 0,
-        decodedTimestamp: CFTimeInterval = CACurrentMediaTime()
+        decodedTimestamp: CFTimeInterval = CACurrentMediaTime(),
+        timing: VideoFrameTiming? = nil,
+        networkReceiveTimestampNs: UInt64 = 0,
+        decodeStartTimestampNs: UInt64 = 0,
+        decodeCompleteTimestampNs: UInt64 = 0
     ) {
         self.pixelBuffer = pixelBuffer
         self.presentationTimeStamp = presentationTimeStamp
@@ -165,5 +226,13 @@ public struct DecodedVideoFrame: @unchecked Sendable {
         self.decodeDurationMs = decodeDurationMs
         self.captureTimestampNs = captureTimestampNs
         self.decodedTimestamp = decodedTimestamp
+        self.timing = timing
+        self.captureTimestampExactNs = timing?.captureTimestampNs ?? UInt64(max(0, captureTimestampNs))
+        self.encodeStartTimestampNs = timing?.encodeStartTimestampNs ?? 0
+        self.encodeCompleteTimestampNs = timing?.encodeCompleteTimestampNs ?? 0
+        self.networkSendTimestampNs = timing?.networkSendTimestampNs ?? 0
+        self.networkReceiveTimestampNs = networkReceiveTimestampNs
+        self.decodeStartTimestampNs = decodeStartTimestampNs
+        self.decodeCompleteTimestampNs = decodeCompleteTimestampNs
     }
 }

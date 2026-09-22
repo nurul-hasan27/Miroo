@@ -55,6 +55,7 @@ public final class H264Decoder: @unchecked Sendable {
         ptsNanoseconds: Int64,
         isKeyframeHint: Bool,
         timing: VideoFrameTiming? = nil,
+        networkReceiveTimestampNs: UInt64 = 0,
         networkTransitMs: Double = 0.0,
         jitterMs: Double = 0.0
     ) {
@@ -75,6 +76,7 @@ public final class H264Decoder: @unchecked Sendable {
             // 2. Keyframe Recovery Guard: Do not attempt to decode if session is not yet initialized
             guard let session = self.session, let formatDesc = self.formatDescription else {
                 self.totalDroppedBeforeInit += 1
+                PipelineBenchmark.shared.recordDecoderDrop()
                 if self.totalDroppedBeforeInit % 30 == 1 {
                     print("[Miroo Decoder] Waiting for keyframe containing SPS/PPS before starting decode...")
                 }
@@ -83,6 +85,7 @@ public final class H264Decoder: @unchecked Sendable {
 
             // Must contain actual video slice data (IDR or non-IDR)
             guard parsed.hasSlice, !parsed.avccData.isEmpty else {
+                PipelineBenchmark.shared.recordDecoderDrop()
                 return
             }
 
@@ -90,6 +93,7 @@ public final class H264Decoder: @unchecked Sendable {
             if !self.hasDecodedFirstKeyframe {
                 guard parsed.hasKeyframe else {
                     self.totalDroppedBeforeInit += 1
+                    PipelineBenchmark.shared.recordDecoderDrop()
                     return
                 }
                 self.hasDecodedFirstKeyframe = true
@@ -112,6 +116,7 @@ public final class H264Decoder: @unchecked Sendable {
 
             guard blockStatus == kCMBlockBufferNoErr, let blockBuffer = blockBuffer else {
                 self.totalDecodeErrors += 1
+                PipelineBenchmark.shared.recordDecoderDrop()
                 return
             }
 
@@ -147,11 +152,15 @@ public final class H264Decoder: @unchecked Sendable {
 
             guard sampleStatus == noErr, let sampleBuffer = sampleBuffer else {
                 self.totalDecodeErrors += 1
+                PipelineBenchmark.shared.recordDecoderDrop()
                 return
             }
 
             // 5. Submit to hardware VTDecompressionSession
             let decodeStartTime = CACurrentMediaTime()
+            let decodeStartTimestampNs = UInt64(decodeStartTime * 1_000_000_000.0)
+            PipelineBenchmark.shared.recordDecodeStart()
+
             var infoFlagsOut: VTDecodeInfoFlags = []
 
             let decodeStatus = VTDecompressionSessionDecodeFrame(
@@ -161,14 +170,18 @@ public final class H264Decoder: @unchecked Sendable {
                 infoFlagsOut: &infoFlagsOut
             ) { [weak self] status, flags, imageBuffer, pts, duration in
                 guard let self = self else { return }
-                let latencyMs = (CACurrentMediaTime() - decodeStartTime) * 1000.0
+                let decodeCompleteTime = CACurrentMediaTime()
+                let latencyMs = (decodeCompleteTime - decodeStartTime) * 1000.0
+                let decodeCompleteTimestampNs = UInt64(decodeCompleteTime * 1_000_000_000.0)
+
+                PipelineBenchmark.shared.recordDecodeComplete(durationMs: latencyMs)
 
                 if status == noErr, let pixelBuffer = imageBuffer {
                     let encMs = timing.map { Double($0.encodeDurationUs) / 1000.0 } ?? 3.2
                     let qMs = timing.map { Double($0.macQueueDelayUs) / 1000.0 } ?? 0.2
                     var capMs = 1.8
-                    if let t = timing, t.macSendTimestampNs > ptsNanoseconds {
-                        let totalMacTimeUs = Double(t.macSendTimestampNs - ptsNanoseconds) / 1000.0
+                    if let t = timing, t.networkSendTimestampNs > 0, t.captureTimestampNs > 0, t.networkSendTimestampNs >= t.captureTimestampNs {
+                        let totalMacTimeUs = Double(t.networkSendTimestampNs - t.captureTimestampNs) / 1000.0
                         let capTimeUs = totalMacTimeUs - Double(t.encodeDurationUs) - Double(t.macQueueDelayUs)
                         if capTimeUs > 0 && capTimeUs < 20_000 {
                             capMs = capTimeUs / 1000.0
@@ -185,10 +198,15 @@ public final class H264Decoder: @unchecked Sendable {
                         queueMs: qMs,
                         networkMs: networkTransitMs,
                         decodeDurationMs: latencyMs,
-                        captureTimestampNs: ptsNanoseconds
+                        captureTimestampNs: ptsNanoseconds,
+                        timing: timing,
+                        networkReceiveTimestampNs: networkReceiveTimestampNs,
+                        decodeStartTimestampNs: decodeStartTimestampNs,
+                        decodeCompleteTimestampNs: decodeCompleteTimestampNs
                     )
                 } else {
                     self.totalDecodeErrors += 1
+                    PipelineBenchmark.shared.recordDecoderDrop()
                     if self.totalDecodeErrors % 30 == 1 {
                         print("[Miroo Decoder] Hardware decode error: OSStatus \(status), flags=\(flags)")
                     }
@@ -197,6 +215,7 @@ public final class H264Decoder: @unchecked Sendable {
 
             if decodeStatus != noErr {
                 self.totalDecodeErrors += 1
+                PipelineBenchmark.shared.recordDecoderDrop()
                 print("[Miroo Decoder] VTDecompressionSessionDecodeFrame failed with status \(decodeStatus)")
             }
         }
@@ -214,7 +233,11 @@ public final class H264Decoder: @unchecked Sendable {
         queueMs: Double,
         networkMs: Double,
         decodeDurationMs: Double,
-        captureTimestampNs: Int64
+        captureTimestampNs: Int64,
+        timing: VideoFrameTiming? = nil,
+        networkReceiveTimestampNs: UInt64 = 0,
+        decodeStartTimestampNs: UInt64 = 0,
+        decodeCompleteTimestampNs: UInt64 = 0
     ) {
         totalFramesDecoded += 1
         if isKeyframe { totalKeyframesDecoded += 1 }
@@ -246,7 +269,11 @@ public final class H264Decoder: @unchecked Sendable {
             queueMs: queueMs,
             networkMs: networkMs,
             decodeDurationMs: decodeDurationMs,
-            captureTimestampNs: captureTimestampNs
+            captureTimestampNs: captureTimestampNs,
+            timing: timing,
+            networkReceiveTimestampNs: networkReceiveTimestampNs,
+            decodeStartTimestampNs: decodeStartTimestampNs,
+            decodeCompleteTimestampNs: decodeCompleteTimestampNs
         )
 
         onFrameDecoded?(frame)
