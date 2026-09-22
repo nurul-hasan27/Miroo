@@ -16,6 +16,7 @@ import os.lock
 public enum VideoTransportType: String, Codable, Sendable, CustomStringConvertible {
     case tcp = "TCP"
     case udp = "UDP"
+    case usb = "USB"
 
     public var description: String { rawValue }
 }
@@ -637,6 +638,115 @@ public final class TCPVideoReceiverTransport: VideoReceiverTransport, @unchecked
     }
 
     public func ingestTCPMessage(header: MirooHeader, payload: Data, receiveTimestampNs: UInt64, netTransitMs: Double, jitterMs: Double) {
+        metrics.packetsReceived += 1
+        metrics.framesReceived += 1
+        metrics.bytesReceived += UInt64(MirooHeader.headerSize + payload.count)
+
+        let (timing, annexB) = VideoFrameTiming.parse(from: payload)
+        onFrameReceived?(header.sequence, header.pts, header.isKeyframe, annexB, timing, receiveTimestampNs, netTransitMs, jitterMs)
+    }
+
+    public func getMetrics() -> VideoTransportMetrics {
+        metrics
+    }
+}
+
+// MARK: - USB Video Transports (Phase 8B)
+
+public final class USBVideoSenderTransport: VideoSenderTransport, @unchecked Sendable {
+    public let transportType: VideoTransportType = .usb
+    public private(set) var state: TransportConnectionState = .disconnected {
+        didSet { onStateChanged?(state) }
+    }
+
+    public var onStateChanged: ((TransportConnectionState) -> Void)?
+    public var onError: ((Error) -> Void)?
+
+    private weak var connection: MirooConnection?
+    private var metrics = VideoTransportMetrics()
+
+    public init(connection: MirooConnection?) {
+        self.connection = connection
+        self.state = (connection?.state == .streaming) ? .streaming : .connected
+    }
+
+    public func updateConnection(_ connection: MirooConnection?) {
+        self.connection = connection
+        self.state = (connection?.state == .streaming) ? .streaming : (connection != nil ? .connected : .disconnected)
+    }
+
+    public func start() {
+        state = (connection?.state == .streaming) ? .streaming : .connected
+    }
+
+    public func stop() {
+        state = .disconnected
+    }
+
+    public func sendFrame(
+        sequence: UInt64,
+        pts: Int64,
+        isKeyframe: Bool,
+        annexBData: Data,
+        timing: VideoFrameTiming?,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
+        guard let conn = connection, conn.state == .streaming else {
+            completion(.failure(NSError(domain: "MirooUSB", code: -1, userInfo: [NSLocalizedDescriptionKey: "USB connection not streaming."])))
+            return
+        }
+
+        let msg = MirooMessage.videoFrame(
+            sequence: sequence,
+            pts: pts,
+            isKeyframe: isKeyframe,
+            annexBData: annexBData,
+            timing: timing
+        )
+        let serialized = msg.serialize()
+
+        metrics.framesSent += 1
+        metrics.bytesSent += UInt64(serialized.count)
+
+        conn.send(data: serialized) { [weak self] error in
+            if let error = error {
+                self?.onError?(error)
+                completion(.failure(error))
+            } else {
+                completion(.success(()))
+            }
+        }
+    }
+
+    public func getMetrics() -> VideoTransportMetrics {
+        metrics
+    }
+}
+
+public final class USBVideoReceiverTransport: VideoReceiverTransport, @unchecked Sendable {
+    public let transportType: VideoTransportType = .usb
+    public private(set) var state: TransportConnectionState = .disconnected {
+        didSet { onStateChanged?(state) }
+    }
+
+    public var onStateChanged: ((TransportConnectionState) -> Void)?
+    public var onFrameReceived: ((_ sequence: UInt64, _ pts: Int64, _ isKeyframe: Bool, _ data: Data, _ timing: VideoFrameTiming?, _ networkReceiveTimestampNs: UInt64, _ netTransitMs: Double, _ jitterMs: Double) -> Void)?
+    public var onKeyframeRequested: (() -> Void)?
+    public var onError: ((Error) -> Void)?
+
+    private var metrics = VideoTransportMetrics()
+
+    public init() {}
+
+    public func start() {
+        state = .streaming
+    }
+
+    public func stop() {
+        state = .disconnected
+    }
+
+    public func ingestUSBMessage(header: MirooHeader, payload: Data, receiveTimestampNs: UInt64, netTransitMs: Double, jitterMs: Double) {
         metrics.packetsReceived += 1
         metrics.framesReceived += 1
         metrics.bytesReceived += UInt64(MirooHeader.headerSize + payload.count)
