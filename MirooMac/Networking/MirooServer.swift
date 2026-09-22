@@ -33,11 +33,17 @@ public final class MirooServer: @unchecked Sendable {
     private var sequenceCounter: UInt64 = 0
     private var metricsTimer: DispatchSourceTimer?
 
-    // Transport Abstraction (Phase 8A)
+    // Transport Abstraction (Phase 8A & 8B)
     public private(set) var currentTransportType: VideoTransportType = .tcp
     public private(set) var activeVideoTransport: (any VideoSenderTransport)?
     public var udpPort: UInt16 = 51042
     public private(set) var udpSessionToken: UInt32 = UInt32.random(in: 100000...999999)
+
+    // USB Transport (Phase 8B)
+    private let usbmuxClient = USBMuxClient()
+    private var usbRetryTimer: DispatchSourceTimer?
+    private var isConnectingUSB: Bool = false
+    public private(set) var isUSBActive: Bool = false
 
     // Lifecycle Callbacks
     public var onClientConnected: ((String) -> Void)?
@@ -115,9 +121,11 @@ public final class MirooServer: @unchecked Sendable {
         self.listener = newListener
 
         self.startMetricsTimer()
+        self.startUSBMonitoring()
     }
 
     public func stop() {
+        stopUSBMonitoring()
         metricsTimer?.cancel()
         metricsTimer = nil
 
@@ -134,6 +142,7 @@ public final class MirooServer: @unchecked Sendable {
             self.listener = nil
             self.frameQueue.clear()
             self.isSending = false
+            self.isUSBActive = false
             print("[Miroo Server] Stopped.")
         }
     }
@@ -160,6 +169,13 @@ public final class MirooServer: @unchecked Sendable {
 
     private func handleNewConnection(_ newNWConn: NWConnection) {
         print("[Miroo Server] Incoming connection detected from \(newNWConn.endpoint)...")
+
+        // USB has higher priority: reject incoming Wi-Fi probe if USB is actively connected
+        if isUSBActive {
+            print("[Miroo Server] Active USB connection in progress; rejecting secondary Wi-Fi probe from \(newNWConn.endpoint)")
+            newNWConn.cancel()
+            return
+        }
 
         // If an existing client is connecting, connected, or streaming, reject duplicate Happy Eyeballs probe
         if let existing = activeConnection {
@@ -270,6 +286,10 @@ public final class MirooServer: @unchecked Sendable {
                 let udpSender = UDPVideoSenderTransport(port: udpPort, sessionToken: udpSessionToken)
                 self.activeVideoTransport = udpSender
                 udpSender.start()
+            } else if currentTransportType == .usb {
+                let usbSender = USBVideoSenderTransport(connection: conn)
+                self.activeVideoTransport = usbSender
+                usbSender.start()
             } else {
                 let tcpSender = TCPVideoSenderTransport(connection: conn)
                 self.activeVideoTransport = tcpSender
@@ -363,6 +383,10 @@ public final class MirooServer: @unchecked Sendable {
                 let udpSender = UDPVideoSenderTransport(port: self.udpPort, sessionToken: self.udpSessionToken)
                 self.activeVideoTransport = udpSender
                 udpSender.start()
+            } else if type == .usb {
+                let usbSender = USBVideoSenderTransport(connection: self.activeConnection)
+                self.activeVideoTransport = usbSender
+                usbSender.start()
             } else {
                 let tcpSender = TCPVideoSenderTransport(connection: self.activeConnection)
                 self.activeVideoTransport = tcpSender
@@ -496,6 +520,147 @@ public final class MirooServer: @unchecked Sendable {
                 }
             }
         }
+    }
+
+    // MARK: - USB Management (Phase 8B)
+
+    private func startUSBMonitoring() {
+        usbmuxClient.onDeviceAttached = { [weak self] device in
+            self?.handleUSBDeviceAttached(device)
+        }
+        usbmuxClient.onDeviceDetached = { [weak self] deviceID in
+            self?.handleUSBDeviceDetached(deviceID)
+        }
+        usbmuxClient.startMonitoring()
+    }
+
+    private func stopUSBMonitoring() {
+        stopUSBRetryTimer()
+        usbmuxClient.stopMonitoring()
+    }
+
+    private func handleUSBDeviceAttached(_ device: USBMuxDevice) {
+        queue.async { [weak self] in
+            guard let self = self else { return }
+            print("[Miroo Server] USB device attached: ID=\(device.deviceID), Serial=\(device.serialNumber)")
+            self.attemptUSBConnection(deviceID: device.deviceID)
+        }
+    }
+
+    private func handleUSBDeviceDetached(_ deviceID: UInt32) {
+        queue.async { [weak self] in
+            guard let self = self else { return }
+            print("[Miroo Server] USB device detached: ID=\(deviceID)")
+            self.stopUSBRetryTimer()
+            if self.isUSBActive {
+                print("[Miroo Server] Active USB connection detached -> disconnecting cleanly")
+                self.isUSBActive = false
+                self.activeConnection?.disconnect()
+                self.activeConnection = nil
+                self.activeVideoTransport?.stop()
+                self.activeVideoTransport = nil
+                self.frameQueue.clear()
+                self.isSending = false
+                self.onClientDisconnected?()
+            }
+        }
+    }
+
+    private func attemptUSBConnection(deviceID: UInt32) {
+        guard !isConnectingUSB else { return }
+        if isUSBActive && activeConnection?.state == .streaming { return }
+
+        isConnectingUSB = true
+        usbmuxClient.connectToDevice(deviceID: deviceID, port: USBMuxClient.targetDevicePort, timeoutSeconds: 3.0) { [weak self] result in
+            guard let self = self else { return }
+            self.queue.async {
+                self.isConnectingUSB = false
+                switch result {
+                case .success(let nwConn):
+                    print("[Miroo Server] USB tunnel established to iOS device ID=\(deviceID)!")
+                    self.stopUSBRetryTimer()
+                    self.handleNewUSBConnection(nwConn)
+                case .failure:
+                    // Receiver app on iPhone might not be open yet; schedule retry while device remains attached
+                    if self.usbmuxClient.attachedDevices[deviceID] != nil && !self.isUSBActive {
+                        self.scheduleUSBRetry(for: deviceID)
+                    }
+                }
+            }
+        }
+    }
+
+    private func scheduleUSBRetry(for deviceID: UInt32) {
+        guard usbRetryTimer == nil, !isUSBActive else { return }
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + 1.5, repeating: 1.5)
+        timer.setEventHandler { [weak self] in
+            guard let self = self else { return }
+            if self.isUSBActive || self.usbmuxClient.attachedDevices[deviceID] == nil {
+                self.stopUSBRetryTimer()
+                return
+            }
+            self.attemptUSBConnection(deviceID: deviceID)
+        }
+        timer.resume()
+        self.usbRetryTimer = timer
+    }
+
+    private func stopUSBRetryTimer() {
+        usbRetryTimer?.cancel()
+        usbRetryTimer = nil
+    }
+
+    private func handleNewUSBConnection(_ newNWConn: NWConnection) {
+        // Prioritize USB: Disconnect existing Wi-Fi connection if present
+        if let existing = activeConnection {
+            print("[Miroo Server] Prioritizing USB connection over existing connection (\(currentTransportType))...")
+            existing.disconnect()
+            activeConnection = nil
+        }
+
+        frameQueue.clear()
+        isSending = false
+        isUSBActive = true
+        currentTransportType = .usb
+
+        let connection = MirooConnection(connection: newNWConn, queue: queue)
+        self.activeConnection = connection
+
+        connection.onStateChanged = { [weak self, weak connection] state in
+            guard let self = self, let conn = connection else { return }
+            print("[Miroo Server] USB Connection state: \(state)")
+            if state == .connected {
+                self.initiateHandshake(conn)
+            }
+        }
+
+        connection.onMessageReceived = { [weak self, weak connection] message in
+            guard let self = self, let conn = connection else { return }
+            self.handleMessage(message, from: conn)
+        }
+
+        connection.onDisconnected = { [weak self, weak connection] error in
+            guard let self = self else { return }
+            print("[Miroo Server] USB connection disconnected: \(error?.localizedDescription ?? "Clean close")")
+            if self.activeConnection?.id == connection?.id {
+                self.isUSBActive = false
+                self.activeConnection = nil
+                self.activeVideoTransport?.stop()
+                self.activeVideoTransport = nil
+                self.frameQueue.clear()
+                self.isSending = false
+                self.onClientDisconnected?()
+                print("[Miroo Server] Ready for new connections.")
+
+                // Check if any attached device is ready to reconnect
+                if let dev = self.usbmuxClient.attachedDevices.values.first {
+                    self.scheduleUSBRetry(for: dev.deviceID)
+                }
+            }
+        }
+
+        connection.start()
     }
 
     // MARK: - Metrics Reporting
