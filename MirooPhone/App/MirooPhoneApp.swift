@@ -58,7 +58,7 @@ final class ReceiverViewModel: ObservableObject {
         guard !isStarted else { return }
         receiver.start()
         isStarted = true
-        status = "Browsing for Miroo Mac..."
+        status = receiver.isUSBActive ? "Miroo Mac Available (USB)" : "Browsing for Miroo Mac..."
     }
 
     func toggleConnection() {
@@ -116,7 +116,12 @@ final class ReceiverViewModel: ObservableObject {
         // 1. Connection Callbacks
         receiver.onConnected = { [weak self] hostName in
             Task { @MainActor in
-                self?.status = "Connected"
+                let isUSB = self?.receiver.isUSBActive == true || self?.receiver.currentTransportType == .usb
+                self?.status = isUSB ? "Connected (USB)" : "Connected"
+                if isUSB {
+                    self?.transportType = "USB"
+                    PipelineBenchmark.shared.activeTransport = "USB"
+                }
                 self?.connectedHost = hostName
                 // If device is already in landscape upon connection, sync with Mac
                 if let cur = self?.currentOrientation, cur != .portrait {
@@ -140,6 +145,7 @@ final class ReceiverViewModel: ObservableObject {
             Task { @MainActor in
                 self?.streamDetails = "\(config.width)x\(config.height) (\(config.orientation.rawValue)) @ \(config.fps) FPS (\(config.codec)) [\(config.transport)]"
                 self?.transportType = config.transport
+                PipelineBenchmark.shared.activeTransport = config.transport
                 if let orientation = MirooOrientation(rawValue: config.orientation.rawValue) {
                     self?.currentOrientation = orientation
                 }
@@ -172,13 +178,19 @@ final class ReceiverViewModel: ObservableObject {
             if !self.isStreaming {
                 Task { @MainActor in
                     self.isStreaming = true
-                    self.status = "Streaming"
+                    let isUSB = self.receiver.isUSBActive || self.receiver.currentTransportType == .usb
+                    self.status = isUSB ? "Streaming (USB)" : "Streaming"
+                    if isUSB {
+                        self.transportType = "USB"
+                    }
+                    PipelineBenchmark.shared.activeTransport = self.transportType
                     if let info = self.receiver.displayInfo {
                         self.displayDetails = "\(info.name) (\(info.width)x\(info.height))"
                     }
                     if let config = self.receiver.streamConfig {
                         self.streamDetails = "\(config.width)x\(config.height) @ \(config.fps) FPS (\(config.codec)) [\(config.transport)]"
                         self.transportType = config.transport
+                        PipelineBenchmark.shared.activeTransport = config.transport
                     }
                 }
             }
@@ -194,6 +206,7 @@ final class ReceiverViewModel: ObservableObject {
             Task { @MainActor in
                 self?.diagnostics = diag
                 self?.transportType = self?.receiver.currentTransportType.rawValue ?? "TCP"
+                PipelineBenchmark.shared.activeTransport = self?.transportType ?? "TCP"
             }
         }
 
@@ -317,7 +330,7 @@ struct ReceiverContentView: View {
                                     Spacer()
                                     Text(viewModel.transportType)
                                         .bold()
-                                        .foregroundColor(viewModel.transportType == "UDP" ? .cyan : .green)
+                                        .foregroundColor(viewModel.transportType == "USB" ? .yellow : (viewModel.transportType == "UDP" ? .cyan : .green))
                                 }
                             }
 
@@ -417,7 +430,7 @@ struct DiagnosticHUDView: View {
                 Spacer()
                 Text(transport)
                     .font(.system(size: 11, weight: .bold, design: .monospaced))
-                    .foregroundColor(transport == "UDP" ? .cyan : .green)
+                    .foregroundColor(transport == "USB" ? .yellow : (transport == "UDP" ? .cyan : .green))
             }
 
             HStack {
