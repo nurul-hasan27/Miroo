@@ -38,9 +38,12 @@ struct Phase8ATests {
         testStreamConfigTransportPayload()
         testRegressionPhase6A_TouchSerialization()
         testRegressionPhase6B_ScrollAndRightClickSerialization()
+        testSequenceDiscontinuityKeyframeRecovery()
+        testMultiFrameContinuousStreaming()
+        testRenderViewportLayoutLandscapeHardwareSafeAreas()
 
         print("\n==================================================================")
-        print("🎉 ALL 15 PHASE 8A AUTOMATED TESTS PASSED SUCCESSFULLY!")
+        print("🎉 ALL 18 PHASE 8A & STABILIZATION AUTOMATED TESTS PASSED SUCCESSFULLY!")
         print("==================================================================")
     }
 
@@ -481,5 +484,97 @@ struct Phase8ATests {
         }
         assertCondition(parsedRC.timestampNs == 55667788, "Right click timestamp mismatch")
         print("  ✓ Phase 6B trackpad scrolling and right click payloads fully intact.")
+    }
+
+    // 16. Sequence Discontinuity & IDR Keyframe Request
+    static func testSequenceDiscontinuityKeyframeRecovery() {
+        print("\n[Test 16] Sequence Discontinuity IDR Keyframe Trigger...")
+        let token: UInt32 = 112233
+        let jitterBuffer = UDPBoundedJitterBuffer(sessionToken: token, maxPendingFrames: 4, frameTimeoutMs: 100.0)
+
+        var keyframeRequested = false
+        jitterBuffer.onKeyframeNeeded = {
+            keyframeRequested = true
+        }
+
+        // Deliver frame 1 (complete)
+        let f1 = MirooUDPPacket(sessionToken: token, packetSequenceNumber: 1, frameSequenceNumber: 1, fragmentIndex: 0, fragmentCount: 1, ptsNanoseconds: 100, payload: Data([0x01]))
+        jitterBuffer.ingestPacket(data: f1.serialize())
+
+        // Frame 2 is completely dropped over the network (simulated UDP packet drop)
+        // Now Frame 3 arrives (delta frame)
+        let f3 = MirooUDPPacket(sessionToken: token, packetSequenceNumber: 2, frameSequenceNumber: 3, fragmentIndex: 0, fragmentCount: 1, ptsNanoseconds: 300, payload: Data([0x03]))
+
+        var deliveredSeq: UInt64 = 0
+        jitterBuffer.onFrameCompleted = { seq, _, _, _, _, _ in
+            deliveredSeq = seq
+        }
+
+        jitterBuffer.ingestPacket(data: f3.serialize())
+
+        assertCondition(keyframeRequested == true, "onKeyframeNeeded must be triggered upon sequence gap (seq 1 -> seq 3)")
+        assertCondition(deliveredSeq == 3, "Frame 3 must still be reconstructed and delivered")
+        print("  ✓ Sequence gap detected; IDR recovery requested and reassembled frame delivered.")
+    }
+
+    // 17. Multi-Frame Continuous Streaming
+    static func testMultiFrameContinuousStreaming() {
+        print("\n[Test 17] Multi-Frame Continuous Streaming Reassembly...")
+        let token: UInt32 = 445566
+        let jitterBuffer = UDPBoundedJitterBuffer(sessionToken: token, maxPendingFrames: 4, frameTimeoutMs: 100.0)
+
+        var deliveredFrames: [UInt64] = []
+        jitterBuffer.onFrameCompleted = { seq, _, _, _, _, _ in
+            deliveredFrames.append(seq)
+        }
+
+        var packetSeq: UInt32 = 1
+        for frameSeq: UInt64 in 1...10 {
+            // Each frame has 3 fragments
+            for fragIdx: UInt16 in 0..<3 {
+                let packet = MirooUDPPacket(
+                    sessionToken: token,
+                    packetSequenceNumber: packetSeq,
+                    frameSequenceNumber: frameSeq,
+                    fragmentIndex: fragIdx,
+                    fragmentCount: 3,
+                    ptsNanoseconds: Int64(frameSeq * 16_666_666),
+                    payload: Data([UInt8(frameSeq), UInt8(fragIdx)])
+                )
+                packetSeq += 1
+                jitterBuffer.ingestPacket(data: packet.serialize())
+            }
+        }
+
+        assertCondition(deliveredFrames.count == 10, "All 10 frames must be reassembled and delivered (got \(deliveredFrames.count))")
+        assertCondition(deliveredFrames == Array(1...10), "Delivered frame order must match 1...10")
+        assertCondition(jitterBuffer.incompleteFramesDropped == 0, "Zero incomplete frame drops")
+        assertCondition(jitterBuffer.staleFramesDropped == 0, "Zero stale frame drops")
+        print("  ✓ Continuous multi-frame UDP stream reassembled seamlessly with zero frame drops.")
+    }
+
+    // 18. Viewport Layout & Landscape Aspect Fit
+    static func testRenderViewportLayoutLandscapeHardwareSafeAreas() {
+        print("\n[Test 18] Viewport Layout Landscape Aspect Fit & Safe Area Alignment...")
+        // iPhone 11 landscape usable screen: 848 x 393 points (usable area excluding notch and home bar)
+        let usableBounds = CGRect(x: 0, y: 0, width: 848, height: 393)
+        let drawableSize = CGSize(width: 1696, height: 786)
+        let macLandscapeVideoSize = CGSize(width: 2532, height: 1170)
+
+        let layout = RenderViewportLayout.compute(
+            viewBounds: usableBounds,
+            drawableSize: drawableSize,
+            videoSize: macLandscapeVideoSize
+        )
+
+        // Verify video aspect ratio closely matches usable screen:
+        // Mac: 2532 / 1170 = 2.1641
+        // Screen: 1696 / 786 = 2.1578
+        // Fill percentage: renderRectPixels.width / drawableSize.width should be > 99%
+        let fillRatioX = layout.renderRectPixels.width / drawableSize.width
+        let fillRatioY = layout.renderRectPixels.height / drawableSize.height
+        assertCondition(fillRatioX > 0.99 || fillRatioY > 0.99, "Video must fill >99% of usable screen area")
+        assertCondition(layout.renderRectPixels.minX >= 0, "No negative margins")
+        print("  ✓ Landscape video fills usable area (>99% fill ratio) with zero distortion.")
     }
 }

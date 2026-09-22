@@ -487,13 +487,10 @@ public final class UDPBoundedJitterBuffer: @unchecked Sendable {
                 }
             }
 
-            completedFrame = (
-                seq: frame.frameSequence,
-                pts: frame.pts,
-                isKeyframe: frame.isKeyframe,
-                data: fullAnnexB,
-                timing: frame.timing
-            )
+            // Detect sequence discontinuity before this frame
+            if lastDeliveredSequence > 0 && frame.frameSequence > lastDeliveredSequence + 1 && !frame.isKeyframe {
+                onKeyframeNeeded?()
+            }
 
             // Remove this and all older pending frames (fresh > stale)
             pendingFrames.removeValue(forKey: seq)
@@ -503,6 +500,13 @@ public final class UDPBoundedJitterBuffer: @unchecked Sendable {
                 staleFramesDropped += 1
             }
 
+            completedFrame = (
+                seq: frame.frameSequence,
+                pts: frame.pts,
+                isKeyframe: frame.isKeyframe,
+                data: fullAnnexB,
+                timing: frame.timing
+            )
             lastDeliveredSequence = seq
             framesReconstructed += 1
         }
@@ -715,7 +719,7 @@ public final class UDPVideoSenderTransport: VideoSenderTransport, @unchecked Sen
     }
 
     private func receiveRegistration(conn: NWConnection) {
-        conn.receive(minimumIncompleteLength: 1, maximumLength: 1024) { [weak self, weak conn] content, _, isComplete, err in
+        conn.receiveMessage { [weak self, weak conn] content, context, isComplete, err in
             guard let self = self, let conn = conn else { return }
             if let data = content, let reg = UDPRegistrationPayload.deserialize(from: data) {
                 if reg.sessionToken == self.sessionToken {
@@ -727,7 +731,7 @@ public final class UDPVideoSenderTransport: VideoSenderTransport, @unchecked Sen
                     print("[Miroo UDP Sender] Rejected UDP registration with invalid token \(reg.sessionToken) (expected \(self.sessionToken))")
                 }
             }
-            if !isComplete && err == nil {
+            if err == nil && self.state != .disconnected {
                 self.receiveRegistration(conn: conn)
             }
         }
@@ -797,17 +801,36 @@ public final class UDPVideoSenderTransport: VideoSenderTransport, @unchecked Sen
             }
 
             var sentBytes: UInt64 = 0
-            for packet in packets {
+            let totalPackets = packets.count
+            var processedPackets = 0
+            var sendError: Error? = nil
+
+            for (idx, packet) in packets.enumerated() {
                 let bytes = packet.serialize()
                 sentBytes += UInt64(bytes.count)
                 self.metrics.packetsSent += 1
 
-                conn.send(content: bytes, completion: .idempotent)
+                let isLast = (idx == totalPackets - 1)
+                conn.send(content: bytes, isComplete: true, completion: .contentProcessed { [weak self] err in
+                    guard let self = self else { return }
+                    if let err = err {
+                        sendError = err
+                    }
+                    processedPackets += 1
+                    if processedPackets == totalPackets {
+                        self.queue.async {
+                            self.metrics.framesSent += 1
+                            self.metrics.bytesSent += sentBytes
+                            if let err = sendError {
+                                completion(.failure(err))
+                            } else {
+                                completion(.success(()))
+                            }
+                        }
+                    }
+                })
+                _ = isLast
             }
-
-            self.metrics.framesSent += 1
-            self.metrics.bytesSent += sentBytes
-            completion(.success(()))
         }
     }
 
@@ -929,14 +952,14 @@ public final class UDPVideoReceiverTransport: VideoReceiverTransport, @unchecked
                 return
             }
             let reg = UDPRegistrationPayload(sessionToken: self.sessionToken)
-            conn.send(content: reg.serialize(), completion: .idempotent)
+            conn.send(content: reg.serialize(), isComplete: true, completion: .idempotent)
         }
         timer.resume()
         self.registrationTimer = timer
     }
 
     private func receiveLoop(conn: NWConnection) {
-        conn.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self, weak conn] content, _, isComplete, error in
+        conn.receiveMessage { [weak self, weak conn] content, context, isComplete, error in
             guard let self = self, let conn = conn else { return }
 
             if let data = content, !data.isEmpty {
@@ -950,7 +973,7 @@ public final class UDPVideoReceiverTransport: VideoReceiverTransport, @unchecked
             if let error = error {
                 print("[Miroo UDP Receiver] Receive error: \(error.localizedDescription)")
                 self.onError?(error)
-            } else if !isComplete && self.state == .streaming {
+            } else if self.state == .streaming {
                 self.receiveLoop(conn: conn)
             }
         }

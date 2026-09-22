@@ -38,6 +38,7 @@ public final class H264Decoder: @unchecked Sendable {
 
     // Output Callback
     public var onFrameDecoded: ((DecodedVideoFrame) -> Void)?
+    public var onKeyframeNeeded: (() -> Void)?
     public var onError: ((Error) -> Void)?
 
     public init() {}
@@ -210,6 +211,8 @@ public final class H264Decoder: @unchecked Sendable {
                     if self.totalDecodeErrors % 30 == 1 {
                         print("[Miroo Decoder] Hardware decode error: OSStatus \(status), flags=\(flags)")
                     }
+                    self.hasDecodedFirstKeyframe = false
+                    self.onKeyframeNeeded?()
                 }
             }
 
@@ -217,6 +220,8 @@ public final class H264Decoder: @unchecked Sendable {
                 self.totalDecodeErrors += 1
                 PipelineBenchmark.shared.recordDecoderDrop()
                 print("[Miroo Decoder] VTDecompressionSessionDecodeFrame failed with status \(decodeStatus)")
+                self.hasDecodedFirstKeyframe = false
+                self.onKeyframeNeeded?()
             }
         }
     }

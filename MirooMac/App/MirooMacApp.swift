@@ -76,24 +76,23 @@ final class MirooMacApp: NSObject, NSApplicationDelegate {
         let targetWidth = Int(VirtualDisplayManager.physicalWidth)
         let targetHeight = Int(VirtualDisplayManager.physicalHeight)
 
-        // 3. Initialize low-latency network server (Phase 4 & 6)
+        // 3. Initialize low-latency network server (Phase 4, 6 & 8A)
+        let useUDP = CommandLine.arguments.contains("--udp") || ProcessInfo.processInfo.environment["MIROO_TRANSPORT"]?.lowercased() == "udp"
+        let initialTransport: VideoTransportType = useUDP ? .udp : .tcp
+        if useUDP {
+            print("[Miroo] Starting with UDP Video Transport by default (--udp).")
+        }
+
         let server = MirooServer(
             serviceName: Host.current().localizedName ?? "Miroo Mac",
             width: targetWidth,
             height: targetHeight,
             targetFPS: 60,
             bitrate: 8_000_000,
-            maxQueueDepth: 1
+            maxQueueDepth: 1,
+            initialTransport: initialTransport
         )
         MirooMacApp.sharedServer = server
-
-        do {
-            try server.start()
-        } catch {
-            print("[Miroo] ERROR: Failed to start MirooServer: \(error.localizedDescription)")
-            NSApplication.shared.terminate(nil)
-            return
-        }
 
         // 4. Initialize Mac input controller (Phase 6A: Touch -> Mac Cursor)
         let inputController = MacInputController()
@@ -174,6 +173,15 @@ final class MirooMacApp: NSObject, NSApplicationDelegate {
         // Handle keyframe requests from client or jitter buffer
         server.onRequestKeyframe = { [weak encoder] in
             encoder?.requestKeyframe()
+        }
+
+        // Start server after all callbacks and pipelines are wired
+        do {
+            try server.start()
+        } catch {
+            print("[Miroo] ERROR: Failed to start MirooServer: \(error.localizedDescription)")
+            NSApplication.shared.terminate(nil)
+            return
         }
 
         // Background stdin listener for interactive terminal control

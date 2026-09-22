@@ -184,6 +184,11 @@ final class ReceiverViewModel: ObservableObject {
             }
         }
 
+        // Request an immediate keyframe over TCP if the hardware decoder encounters a decode error or sequence gap
+        decoder.onKeyframeNeeded = { [weak self] in
+            self?.receiver.requestKeyframe(reason: "decode_error")
+        }
+
         // 4. Throttled ~4 Hz diagnostic telemetry updates to avoid view invalidation storms
         renderer?.onDiagnosticsUpdate = { [weak self] diag in
             Task { @MainActor in

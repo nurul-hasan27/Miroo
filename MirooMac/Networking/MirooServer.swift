@@ -55,9 +55,11 @@ public final class MirooServer: @unchecked Sendable {
         height: Int = 2532,
         targetFPS: Int = 60,
         bitrate: Int = 8_000_000,
-        maxQueueDepth: Int = 1
+        maxQueueDepth: Int = 1,
+        initialTransport: VideoTransportType = .tcp
     ) {
         self.serviceName = serviceName
+        self.currentTransportType = initialTransport
         self.width = width
         self.height = height
         self.targetFPS = targetFPS

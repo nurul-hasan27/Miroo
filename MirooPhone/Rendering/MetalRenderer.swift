@@ -515,11 +515,11 @@ public final class MetalRenderer: NSObject, MTKViewDelegate, @unchecked Sendable
         let videoSize = CGSize(width: frame.width, height: frame.height)
 
         #if os(iOS)
-        var insets = view.safeAreaInsets
-        if insets == .zero, let cached = cachedSafeAreaInsets, cached != .zero {
-            insets = cached
-        } else if insets == .zero, let winInsets = view.window?.safeAreaInsets, winInsets != .zero {
-            insets = winInsets
+        var insets = view.window?.safeAreaInsets ?? view.safeAreaInsets
+        if insets == .zero {
+            insets = cachedSafeAreaInsets ?? view.safeAreaInsets
+        } else {
+            cachedSafeAreaInsets = insets
         }
         let layout = RenderViewportLayout.compute(
             viewBounds: viewBounds,
