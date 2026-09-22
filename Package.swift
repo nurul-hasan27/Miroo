@@ -11,7 +11,8 @@ let package = Package(
         .executable(name: "MirooReceiverCLI", targets: ["MirooReceiverCLI"]),
         .executable(name: "Phase6ATests", targets: ["Phase6ATests"]),
         .executable(name: "Phase6BTests", targets: ["Phase6BTests"]),
-        .executable(name: "Phase7Tests", targets: ["Phase7Tests"])
+        .executable(name: "Phase7Tests", targets: ["Phase7Tests"]),
+        .executable(name: "Phase8ATests", targets: ["Phase8ATests"])
     ],
     targets: [
         .target(
@@ -33,6 +34,7 @@ let package = Package(
                 "MirooReceiver.swift",
                 "VideoFrame.swift",
                 "PipelineBenchmark.swift",
+                "VideoTransport.swift",
                 "H264NALUParser.swift",
                 "H264Decoder.swift",
                 "MetalRenderer.swift",
@@ -82,6 +84,7 @@ let package = Package(
                 "MovingContentTest.swift",
                 "Phase6BTests.swift",
                 "Phase7Tests.swift",
+                "Phase8ATests.swift",
                 "main.swift"
             ],
             sources: [
@@ -100,6 +103,7 @@ let package = Package(
                 "MovingContentTest.swift",
                 "Phase6ATests.swift",
                 "Phase7Tests.swift",
+                "Phase8ATests.swift",
                 "main.swift"
             ],
             sources: [
@@ -118,10 +122,30 @@ let package = Package(
                 "MovingContentTest.swift",
                 "Phase6ATests.swift",
                 "Phase6BTests.swift",
+                "Phase8ATests.swift",
                 "main.swift"
             ],
             sources: [
                 "Phase7Tests.swift"
+            ]
+        ),
+        .executableTarget(
+            name: "Phase8ATests",
+            dependencies: [
+                "MirooNetworking"
+            ],
+            path: "Tests",
+            exclude: [
+                "DecodeReconnectionTest",
+                "IntegrationTest",
+                "MovingContentTest.swift",
+                "Phase6ATests.swift",
+                "Phase6BTests.swift",
+                "Phase7Tests.swift",
+                "main.swift"
+            ],
+            sources: [
+                "Phase8ATests.swift"
             ]
         )
     ]

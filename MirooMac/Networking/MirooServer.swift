@@ -33,6 +33,12 @@ public final class MirooServer: @unchecked Sendable {
     private var sequenceCounter: UInt64 = 0
     private var metricsTimer: DispatchSourceTimer?
 
+    // Transport Abstraction (Phase 8A)
+    public private(set) var currentTransportType: VideoTransportType = .tcp
+    public private(set) var activeVideoTransport: (any VideoSenderTransport)?
+    public var udpPort: UInt16 = 51042
+    public private(set) var udpSessionToken: UInt32 = UInt32.random(in: 100000...999999)
+
     // Lifecycle Callbacks
     public var onClientConnected: ((String) -> Void)?
     public var onClientDisconnected: (() -> Void)?
@@ -41,6 +47,7 @@ public final class MirooServer: @unchecked Sendable {
     public var onTouchEvent: ((TouchEventPayload) -> Void)?
     public var onScrollEvent: ((ScrollEventPayload) -> Void)?
     public var onRightClick: ((RightClickPayload) -> Void)?
+    public var onRequestKeyframe: (() -> Void)?
 
     public init(
         serviceName: String = Host.current().localizedName ?? "Miroo Mac",
@@ -114,6 +121,8 @@ public final class MirooServer: @unchecked Sendable {
 
         queue.async { [weak self] in
             guard let self = self else { return }
+            self.activeVideoTransport?.stop()
+            self.activeVideoTransport = nil
             if let active = self.activeConnection {
                 active.disconnect()
                 self.activeConnection = nil
@@ -210,6 +219,21 @@ public final class MirooServer: @unchecked Sendable {
         conn.send(message: helloMsg)
     }
 
+    private func getResolvedServerHost() -> String? {
+        guard let conn = activeConnection else { return nil }
+        if let local = conn.connection.currentPath?.localEndpoint, case .hostPort(let h, _) = local {
+            switch h {
+            case .ipv4(let ip):
+                return "\(ip)"
+            case .ipv6(let ip):
+                return "\(ip)"
+            default:
+                break
+            }
+        }
+        return nil
+    }
+
     private func handleMessage(_ message: MirooMessage, from conn: MirooConnection) {
         switch message.header.messageType {
         case .hello:
@@ -220,7 +244,18 @@ public final class MirooServer: @unchecked Sendable {
             // Send display info & stream configuration
             print("[Miroo Server] Sending DISPLAY_INFO and STREAM_CONFIG...")
             let displayMsg = MirooMessage.displayInfo(width: width, height: height, scaleFactor: 3.0, name: "Miroo Extended iPhone")
-            let streamMsg = MirooMessage.streamConfig(codec: "H264", width: width, height: height, fps: targetFPS, bitrate: bitrate)
+            let streamMsg = MirooMessage.streamConfig(
+                codec: "H264",
+                width: width,
+                height: height,
+                fps: targetFPS,
+                bitrate: bitrate,
+                orientation: (width > height) ? .landscape : .portrait,
+                transport: currentTransportType.rawValue,
+                udpPort: udpPort,
+                sessionToken: udpSessionToken,
+                serverHost: getResolvedServerHost()
+            )
 
             conn.send(message: displayMsg)
             conn.send(message: streamMsg)
@@ -228,6 +263,17 @@ public final class MirooServer: @unchecked Sendable {
         case .ready:
             print("[Miroo Server] Received READY from client. Handshake complete!")
             conn.transitionToStreaming()
+
+            if currentTransportType == .udp {
+                let udpSender = UDPVideoSenderTransport(port: udpPort, sessionToken: udpSessionToken)
+                self.activeVideoTransport = udpSender
+                udpSender.start()
+            } else {
+                let tcpSender = TCPVideoSenderTransport(connection: conn)
+                self.activeVideoTransport = tcpSender
+                tcpSender.start()
+            }
+
             onStreamingStarted?()
             pumpQueue()
 
@@ -265,6 +311,10 @@ public final class MirooServer: @unchecked Sendable {
                 onRightClick?(payload)
             }
 
+        case .keyframeRequest:
+            print("[Miroo Server] Received KEYFRAME_REQUEST from client -> forcing IDR frame...")
+            onRequestKeyframe?()
+
         case .benchmarkReport:
             if let jsonString = String(data: message.payload, encoding: .utf8),
                let report = PipelineBenchmarkReport.fromJSON(jsonString) {
@@ -289,9 +339,46 @@ public final class MirooServer: @unchecked Sendable {
             height: height,
             fps: targetFPS,
             bitrate: bitrate,
-            orientation: orientation
+            orientation: orientation,
+            transport: currentTransportType.rawValue,
+            udpPort: udpPort,
+            sessionToken: udpSessionToken,
+            serverHost: getResolvedServerHost()
         )
         conn.send(message: streamMsg)
+    }
+
+    /// Dynamically switches video streaming transport between TCP and UDP at runtime.
+    public func setVideoTransportType(_ type: VideoTransportType) {
+        queue.async { [weak self] in
+            guard let self = self else { return }
+            guard self.currentTransportType != type else { return }
+            print("[Miroo Server] Switching video transport from \(self.currentTransportType) to \(type)...")
+            self.currentTransportType = type
+            self.activeVideoTransport?.stop()
+
+            if type == .udp {
+                let udpSender = UDPVideoSenderTransport(port: self.udpPort, sessionToken: self.udpSessionToken)
+                self.activeVideoTransport = udpSender
+                udpSender.start()
+            } else {
+                let tcpSender = TCPVideoSenderTransport(connection: self.activeConnection)
+                self.activeVideoTransport = tcpSender
+                tcpSender.start()
+            }
+
+            // Inform client of transport change over reliable TCP control channel
+            if let conn = self.activeConnection, conn.state == .streaming || conn.state == .connected {
+                let setMsg = MirooMessage.setTransport(
+                    transport: type.rawValue,
+                    udpPort: self.udpPort,
+                    sessionToken: self.udpSessionToken,
+                    serverHost: self.getResolvedServerHost()
+                )
+                conn.send(message: setMsg)
+                self.onRequestKeyframe?()
+            }
+        }
     }
 
     // MARK: - Frame Ingestion & Backpressure Send Pump
@@ -362,25 +449,48 @@ public final class MirooServer: @unchecked Sendable {
             macQueueDelayUs: queueDelayUs
         )
 
-        let msg = MirooMessage.videoFrame(
-            sequence: frame.sequence,
-            pts: frame.pts,
-            isKeyframe: frame.isKeyframe,
-            annexBData: frame.data,
-            timing: timing
-        )
-        let serialized = msg.serialize()
+        if let transport = activeVideoTransport, transport.state == .streaming || transport.state == .connected {
+            transport.sendFrame(
+                sequence: frame.sequence,
+                pts: frame.pts,
+                isKeyframe: frame.isKeyframe,
+                annexBData: frame.data,
+                timing: timing
+            ) { [weak self] result in
+                guard let self = self else { return }
+                self.queue.async {
+                    self.isSending = false
+                    switch result {
+                    case .success:
+                        self.metrics.recordFrameSent(bytes: frame.data.count)
+                        PipelineBenchmark.shared.recordFrameTransmitted(sequence: frame.sequence)
+                        self.pumpQueue()
+                    case .failure(let err):
+                        print("[Miroo Server] Transport sendFrame failed: \(err.localizedDescription)")
+                    }
+                }
+            }
+        } else {
+            // Direct TCP fallback
+            let msg = MirooMessage.videoFrame(
+                sequence: frame.sequence,
+                pts: frame.pts,
+                isKeyframe: frame.isKeyframe,
+                annexBData: frame.data,
+                timing: timing
+            )
+            let serialized = msg.serialize()
 
-        conn.send(data: serialized) { [weak self] error in
-            guard let self = self else { return }
-            self.queue.async {
-                self.isSending = false
+            conn.send(data: serialized) { [weak self] error in
+                guard let self = self else { return }
+                self.queue.async {
+                    self.isSending = false
 
-                if error == nil {
-                    self.metrics.recordFrameSent(bytes: serialized.count)
-                    PipelineBenchmark.shared.recordFrameTransmitted(sequence: frame.sequence)
-                    // Immediately check if another frame is waiting
-                    self.pumpQueue()
+                    if error == nil {
+                        self.metrics.recordFrameSent(bytes: serialized.count)
+                        PipelineBenchmark.shared.recordFrameTransmitted(sequence: frame.sequence)
+                        self.pumpQueue()
+                    }
                 }
             }
         }

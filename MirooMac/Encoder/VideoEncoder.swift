@@ -221,6 +221,15 @@ public final class VideoEncoder {
         let encodeStartTimestampNs: UInt64
     }
 
+    private var forceNextKeyframe: Bool = false
+
+    /// Asynchronously requests that the very next frame be encoded as an IDR keyframe (e.g. for packet-loss recovery or transport switch).
+    public func requestKeyframe() {
+        os_unfair_lock_lock(&sessionLock)
+        forceNextKeyframe = true
+        os_unfair_lock_unlock(&sessionLock)
+    }
+
     /// Submits a raw CVPixelBuffer for hardware compression with capture and encode timing.
     public func encode(pixelBuffer: CVPixelBuffer, presentationTime: CMTime, captureTimestampNs: UInt64 = 0, forceKeyframe: Bool = false) {
         os_unfair_lock_lock(&sessionLock)
@@ -248,8 +257,11 @@ public final class VideoEncoder {
             encodeStartTimestampNs: encodeStartNs
         )
 
+        let shouldForce = forceKeyframe || forceNextKeyframe
+        forceNextKeyframe = false
+
         var frameProps: CFDictionary? = nil
-        if forceKeyframe {
+        if shouldForce {
             let props: [CFString: Any] = [
                 kVTEncodeFrameOptionKey_ForceKeyFrame: true
             ]

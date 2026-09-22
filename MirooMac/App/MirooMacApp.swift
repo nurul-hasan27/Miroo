@@ -171,7 +171,13 @@ final class MirooMacApp: NSObject, NSApplicationDelegate {
             }
         }
 
-        // Background stdin listener for interactive terminal control ('p' = portrait, 'l' = landscape, 'r' = toggle, 'b' = benchmark report)
+        // Handle keyframe requests from client or jitter buffer
+        server.onRequestKeyframe = { [weak encoder] in
+            encoder?.requestKeyframe()
+        }
+
+        // Background stdin listener for interactive terminal control
+        // 'p' = portrait, 'l' = landscape, 'r' = toggle, 'u' = UDP, 't' = TCP, 'k' = keyframe, 'b' = benchmark report
         DispatchQueue.global(qos: .userInitiated).async { [weak server, weak manager, weak capturer, weak encoder] in
             let stdinHandle = FileHandle.standardInput
             while true {
@@ -188,6 +194,20 @@ final class MirooMacApp: NSObject, NSApplicationDelegate {
                     } else if line == "r" || line == "rotate" {
                         let next: MirooOrientation = (manager.currentOrientation == .portrait) ? .landscape : .portrait
                         await MirooMacApp.performOrientationSwitch(to: next, manager: manager, capturer: capturer, encoder: encoder, server: server)
+                    } else if line == "u" || line == "udp" {
+                        server.setVideoTransportType(.udp)
+                        print("[Miroo] Switched active video transport to UDP.")
+                    } else if line == "t" || line == "tcp" {
+                        server.setVideoTransportType(.tcp)
+                        print("[Miroo] Switched active video transport to TCP.")
+                    } else if line == "k" || line == "key" {
+                        encoder.requestKeyframe()
+                        print("[Miroo] Forced IDR Keyframe on next capture.")
+                    } else if line == "stat" || line == "stats" {
+                        let m = server.activeVideoTransport?.getMetrics() ?? VideoTransportMetrics()
+                        print("=== Transport Metrics (\(server.currentTransportType)) ===")
+                        print("Frames Sent: \(m.framesSent), Packets Sent: \(m.packetsSent), Bytes: \(m.bytesSent)")
+                        print("===============================================")
                     } else if line == "b" || line == "benchmark" {
                         let report = PipelineBenchmark.shared.generateReport()
                         print("\n" + report.formattedSummary() + "\n")
@@ -225,10 +245,10 @@ final class MirooMacApp: NSObject, NSApplicationDelegate {
         }
 
         print("-------------------------------------------------------")
-        print(" Miroo Full Pipeline Active:")
-        print(" Virtual Display -> SCK -> H.264 -> Bonjour + TCP Network Transport")
+        print(" Miroo Full Pipeline Active (Phase 8A Transport Abstraction):")
+        print(" Virtual Display -> SCK -> H.264 -> TCP Baseline / UDP Video Transport")
         print(" iPhone can now discover and stream from this Mac.")
-        print(" Controls: Type 'p' (portrait), 'l' (landscape), 'r' (toggle)")
+        print(" Controls: 'p'/'l'/'r' (orientation), 'u' (UDP), 't' (TCP), 'k' (keyframe), 'stat' (stats), 'b' (benchmark)")
         print(" Press Ctrl+C in this terminal to quit.")
         print("-------------------------------------------------------")
     }

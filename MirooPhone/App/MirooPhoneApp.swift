@@ -40,6 +40,7 @@ final class ReceiverViewModel: ObservableObject {
     @Published var currentOrientation: MirooOrientation = .portrait
     @Published var showHUD: Bool = true
     @Published var diagnostics: FrameDiagnostics = FrameDiagnostics()
+    @Published var transportType: String = "TCP"
 
     let receiver = MirooReceiver(clientName: "iPhone Secondary Display")
     let decoder = H264Decoder()
@@ -137,7 +138,8 @@ final class ReceiverViewModel: ObservableObject {
         // Stream config updates (initial or runtime orientation change)
         receiver.onStreamConfigUpdated = { [weak self] config in
             Task { @MainActor in
-                self?.streamDetails = "\(config.width)x\(config.height) (\(config.orientation.rawValue)) @ \(config.fps) FPS (\(config.codec))"
+                self?.streamDetails = "\(config.width)x\(config.height) (\(config.orientation.rawValue)) @ \(config.fps) FPS (\(config.codec)) [\(config.transport)]"
+                self?.transportType = config.transport
                 if let orientation = MirooOrientation(rawValue: config.orientation.rawValue) {
                     self?.currentOrientation = orientation
                 }
@@ -175,7 +177,8 @@ final class ReceiverViewModel: ObservableObject {
                         self.displayDetails = "\(info.name) (\(info.width)x\(info.height))"
                     }
                     if let config = self.receiver.streamConfig {
-                        self.streamDetails = "\(config.width)x\(config.height) @ \(config.fps) FPS (\(config.codec))"
+                        self.streamDetails = "\(config.width)x\(config.height) @ \(config.fps) FPS (\(config.codec)) [\(config.transport)]"
+                        self.transportType = config.transport
                     }
                 }
             }
@@ -185,6 +188,7 @@ final class ReceiverViewModel: ObservableObject {
         renderer?.onDiagnosticsUpdate = { [weak self] diag in
             Task { @MainActor in
                 self?.diagnostics = diag
+                self?.transportType = self?.receiver.currentTransportType.rawValue ?? "TCP"
             }
         }
 
@@ -231,6 +235,7 @@ struct ReceiverContentView: View {
                             DiagnosticHUDView(
                                 d: viewModel.diagnostics,
                                 orientation: viewModel.currentOrientation,
+                                transport: viewModel.transportType,
                                 onDismiss: {
                                     withAnimation(.easeInOut(duration: 0.2)) {
                                         viewModel.showHUD = false
@@ -302,6 +307,13 @@ struct ReceiverContentView: View {
                                     Text(viewModel.currentOrientation.rawValue.capitalized)
                                         .foregroundColor(.secondary)
                                 }
+                                HStack {
+                                    Text("Active Transport")
+                                    Spacer()
+                                    Text(viewModel.transportType)
+                                        .bold()
+                                        .foregroundColor(viewModel.transportType == "UDP" ? .cyan : .green)
+                                }
                             }
 
                             Section("Display & Stream Config") {
@@ -371,6 +383,7 @@ struct ReceiverContentView: View {
 struct DiagnosticHUDView: View {
     let d: FrameDiagnostics
     var orientation: MirooOrientation = .portrait
+    var transport: String = "TCP"
     let onDismiss: () -> Void
     var onToggleOrientation: (() -> Void)? = nil
 
@@ -390,6 +403,16 @@ struct DiagnosticHUDView: View {
             .padding(.bottom, 2)
 
             Divider().background(Color.white.opacity(0.25))
+
+            HStack {
+                Text("Transport")
+                    .font(.system(size: 11, weight: .regular, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.85))
+                Spacer()
+                Text(transport)
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundColor(transport == "UDP" ? .cyan : .green)
+            }
 
             HStack {
                 Text("Mode")

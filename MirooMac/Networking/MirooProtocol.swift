@@ -23,6 +23,8 @@ public enum MirooMessageType: UInt8, Sendable, CustomStringConvertible {
     case scrollEvent        = 11
     case rightClick         = 12
     case benchmarkReport    = 13
+    case keyframeRequest    = 14
+    case setTransport       = 15
 
     public var description: String {
         switch self {
@@ -39,6 +41,8 @@ public enum MirooMessageType: UInt8, Sendable, CustomStringConvertible {
         case .scrollEvent:        return "SCROLL_EVENT"
         case .rightClick:         return "RIGHT_CLICK"
         case .benchmarkReport:    return "BENCHMARK_REPORT"
+        case .keyframeRequest:    return "KEYFRAME_REQUEST"
+        case .setTransport:       return "SET_TRANSPORT"
         }
     }
 }
@@ -256,18 +260,37 @@ public struct StreamConfigPayload: Codable, Sendable {
     public let fps: Int
     public let bitrate: Int
     public let orientation: MirooOrientation
+    public let transport: String   // "TCP" or "UDP"
+    public let udpPort: UInt16
+    public let sessionToken: UInt32
+    public let serverHost: String?
 
-    public init(codec: String = "H264", width: Int, height: Int, fps: Int = 60, bitrate: Int = 8_000_000, orientation: MirooOrientation = .portrait) {
+    public init(
+        codec: String = "H264",
+        width: Int,
+        height: Int,
+        fps: Int = 60,
+        bitrate: Int = 8_000_000,
+        orientation: MirooOrientation = .portrait,
+        transport: String = "TCP",
+        udpPort: UInt16 = 51042,
+        sessionToken: UInt32 = 0,
+        serverHost: String? = nil
+    ) {
         self.codec = codec
         self.width = width
         self.height = height
         self.fps = fps
         self.bitrate = bitrate
         self.orientation = orientation
+        self.transport = transport
+        self.udpPort = udpPort
+        self.sessionToken = sessionToken
+        self.serverHost = serverHost
     }
 
     enum CodingKeys: String, CodingKey {
-        case codec, width, height, fps, bitrate, orientation
+        case codec, width, height, fps, bitrate, orientation, transport, udpPort, sessionToken, serverHost
     }
 
     public init(from decoder: Decoder) throws {
@@ -278,6 +301,32 @@ public struct StreamConfigPayload: Codable, Sendable {
         fps = try container.decode(Int.self, forKey: .fps)
         bitrate = try container.decode(Int.self, forKey: .bitrate)
         orientation = try container.decodeIfPresent(MirooOrientation.self, forKey: .orientation) ?? (width > height ? .landscape : .portrait)
+        transport = try container.decodeIfPresent(String.self, forKey: .transport) ?? "TCP"
+        udpPort = try container.decodeIfPresent(UInt16.self, forKey: .udpPort) ?? 51042
+        sessionToken = try container.decodeIfPresent(UInt32.self, forKey: .sessionToken) ?? 0
+        serverHost = try container.decodeIfPresent(String.self, forKey: .serverHost)
+    }
+}
+
+public struct KeyframeRequestPayload: Codable, Sendable {
+    public let reason: String
+
+    public init(reason: String = "recovery") {
+        self.reason = reason
+    }
+}
+
+public struct SetTransportPayload: Codable, Sendable {
+    public let transport: String   // "TCP" or "UDP"
+    public let udpPort: UInt16
+    public let sessionToken: UInt32
+    public let serverHost: String?
+
+    public init(transport: String, udpPort: UInt16 = 51042, sessionToken: UInt32 = 0, serverHost: String? = nil) {
+        self.transport = transport
+        self.udpPort = udpPort
+        self.sessionToken = sessionToken
+        self.serverHost = serverHost
     }
 }
 
@@ -566,10 +615,44 @@ extension MirooMessage {
         return MirooMessage(type: .displayInfo, payload: data)
     }
 
-    public static func streamConfig(codec: String = "H264", width: Int, height: Int, fps: Int = 60, bitrate: Int = 8_000_000, orientation: MirooOrientation = .portrait) -> MirooMessage {
-        let payload = StreamConfigPayload(codec: codec, width: width, height: height, fps: fps, bitrate: bitrate, orientation: orientation)
+    public static func streamConfig(
+        codec: String = "H264",
+        width: Int,
+        height: Int,
+        fps: Int = 60,
+        bitrate: Int = 8_000_000,
+        orientation: MirooOrientation = .portrait,
+        transport: String = "TCP",
+        udpPort: UInt16 = 51042,
+        sessionToken: UInt32 = 0,
+        serverHost: String? = nil
+    ) -> MirooMessage {
+        let payload = StreamConfigPayload(
+            codec: codec,
+            width: width,
+            height: height,
+            fps: fps,
+            bitrate: bitrate,
+            orientation: orientation,
+            transport: transport,
+            udpPort: udpPort,
+            sessionToken: sessionToken,
+            serverHost: serverHost
+        )
         let data = (try? JSONEncoder().encode(payload)) ?? Data()
         return MirooMessage(type: .streamConfig, payload: data)
+    }
+
+    public static func keyframeRequest(reason: String = "recovery") -> MirooMessage {
+        let payload = KeyframeRequestPayload(reason: reason)
+        let data = (try? JSONEncoder().encode(payload)) ?? Data()
+        return MirooMessage(type: .keyframeRequest, payload: data)
+    }
+
+    public static func setTransport(transport: String, udpPort: UInt16 = 51042, sessionToken: UInt32 = 0, serverHost: String? = nil) -> MirooMessage {
+        let payload = SetTransportPayload(transport: transport, udpPort: udpPort, sessionToken: sessionToken, serverHost: serverHost)
+        let data = (try? JSONEncoder().encode(payload)) ?? Data()
+        return MirooMessage(type: .setTransport, payload: data)
     }
 
     public static func displayOrientation(orientation: MirooOrientation, width: Int = 1170, height: Int = 2532) -> MirooMessage {
@@ -671,6 +754,16 @@ extension MirooMessage {
     public static func benchmarkReport(_ jsonString: String) -> MirooMessage {
         let payload = jsonString.data(using: .utf8) ?? Data()
         return MirooMessage(type: .benchmarkReport, payload: payload)
+    }
+
+    public func decodeKeyframeRequest() -> KeyframeRequestPayload? {
+        guard header.messageType == .keyframeRequest else { return nil }
+        return try? JSONDecoder().decode(KeyframeRequestPayload.self, from: payload)
+    }
+
+    public func decodeSetTransport() -> SetTransportPayload? {
+        guard header.messageType == .setTransport else { return nil }
+        return try? JSONDecoder().decode(SetTransportPayload.self, from: payload)
     }
 
     public func decodePayload<T: Decodable>(_ type: T.Type) -> T? {

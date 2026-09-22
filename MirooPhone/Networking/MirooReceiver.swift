@@ -24,6 +24,10 @@ public final class MirooReceiver: @unchecked Sendable {
     private(set) public var displayInfo: DisplayInfoPayload?
     private(set) public var streamConfig: StreamConfigPayload?
 
+    // Transport Abstraction (Phase 8A)
+    public private(set) var activeVideoTransport: (any VideoReceiverTransport)?
+    public private(set) var currentTransportType: VideoTransportType = .tcp
+
     // Sequence continuity tracking
     private var lastSequenceNumber: UInt64 = 0
     private var totalDetectedGaps: UInt64 = 0
@@ -130,11 +134,25 @@ public final class MirooReceiver: @unchecked Sendable {
             self.stopPingTimer()
             self.telemetryTimer?.cancel()
             self.telemetryTimer = nil
+            self.activeVideoTransport?.stop()
+            self.activeVideoTransport = nil
             self.browser.stop()
             self.connection?.disconnect()
             self.connection = nil
             self.streamConfig = nil
+            self.lastSequenceNumber = 0
+            self.totalDetectedGaps = 0
+            self.framesLoggedCount = 0
             print("[Miroo Receiver] Stopped.")
+        }
+    }
+
+    /// Asynchronously sends a KEYFRAME_REQUEST to the Mac server over the reliable TCP control channel.
+    public func requestKeyframe(reason: String = "client_request") {
+        queue.async { [weak self] in
+            guard let self = self, let conn = self.connection else { return }
+            print("[Miroo Receiver] Requesting IDR keyframe from server (reason: \(reason))...")
+            conn.send(message: MirooMessage.keyframeRequest(reason: reason))
         }
     }
 
@@ -219,11 +237,30 @@ public final class MirooReceiver: @unchecked Sendable {
                     // Start 250ms ping loop for precise RTT measurement
                     self.startPingTimer(conn: conn)
                 }
+
+                self.setupTransport(
+                    type: VideoTransportType(rawValue: config.transport) ?? .tcp,
+                    serverHost: config.serverHost,
+                    udpPort: config.udpPort,
+                    sessionToken: config.sessionToken
+                )
+
                 onStreamConfigUpdated?(config)
             }
 
         case .videoFrame:
             handleVideoFrame(header: message.header, payload: message.payload)
+
+        case .setTransport:
+            if let payload = message.decodeSetTransport() {
+                print("[Miroo Receiver] Server commanded transport switch to: \(payload.transport)")
+                self.setupTransport(
+                    type: VideoTransportType(rawValue: payload.transport) ?? .tcp,
+                    serverHost: payload.serverHost,
+                    udpPort: payload.udpPort,
+                    sessionToken: payload.sessionToken
+                )
+            }
 
         case .pong:
             if let pong = message.decodePong() {
@@ -259,6 +296,70 @@ public final class MirooReceiver: @unchecked Sendable {
         }
     }
 
+    // MARK: - Transport Setup & Lifecycle
+
+    private func setupTransport(type: VideoTransportType, serverHost: String? = nil, udpPort: UInt16, sessionToken: UInt32) {
+        if self.currentTransportType == type && self.activeVideoTransport != nil {
+            return
+        }
+
+        print("[Miroo Receiver] Configuring video transport: \(type.rawValue)...")
+        self.activeVideoTransport?.stop()
+        self.activeVideoTransport = nil
+        self.currentTransportType = type
+
+        if type == .udp {
+            var host: NWEndpoint.Host = .name("localhost", nil)
+            if let sh = serverHost, !sh.isEmpty {
+                host = .name(sh, nil)
+            } else if let conn = connection {
+                if let remote = conn.connection.currentPath?.remoteEndpoint, case .hostPort(let h, _) = remote {
+                    host = h
+                } else if case .hostPort(let h, _) = conn.connection.endpoint {
+                    host = h
+                }
+            }
+
+            print("[Miroo Receiver] Starting UDP Video Receiver Transport to \(host):\(udpPort) (Session: \(sessionToken))...")
+            let udp = UDPVideoReceiverTransport(host: host, port: udpPort, sessionToken: sessionToken)
+            udp.onFrameReceived = { [weak self] seq, pts, isKeyframe, data, timing, recvNs, netTransitMs, jitterMs in
+                self?.deliverFrame(
+                    seq: seq,
+                    pts: pts,
+                    isKeyframe: isKeyframe,
+                    annexBData: data,
+                    timing: timing,
+                    networkReceiveTimestampNs: recvNs,
+                    netTransitMs: netTransitMs,
+                    jitterMs: jitterMs
+                )
+            }
+            udp.onKeyframeRequested = { [weak self] in
+                print("[Miroo Receiver] Jitter buffer requested keyframe -> forwarding to Mac over TCP")
+                self?.requestKeyframe(reason: "udp_packet_loss")
+            }
+            self.activeVideoTransport = udp
+            udp.start()
+        } else {
+            print("[Miroo Receiver] Active transport is TCP (baseline).")
+            let tcp = TCPVideoReceiverTransport()
+            tcp.onFrameReceived = { [weak self] seq, pts, isKeyframe, data, timing, recvNs, netTransitMs, jitterMs in
+                self?.deliverFrame(
+                    seq: seq,
+                    pts: pts,
+                    isKeyframe: isKeyframe,
+                    annexBData: data,
+                    timing: timing,
+                    networkReceiveTimestampNs: recvNs,
+                    netTransitMs: netTransitMs,
+                    jitterMs: jitterMs
+                )
+            }
+            self.activeVideoTransport = tcp
+            tcp.start()
+        }
+    }
+
     // MARK: - Video Frame Processing & Verification
 
     private func handleVideoFrame(header: MirooHeader, payload: Data) {
@@ -266,10 +367,6 @@ public final class MirooReceiver: @unchecked Sendable {
         let seq = header.sequence
         let pts = header.pts
         let isKeyframe = header.isKeyframe
-        let size = payload.count
-
-        metrics.recordFrameReceived(bytes: MirooHeader.headerSize + size)
-        PipelineBenchmark.shared.recordFrameReceived(sequence: seq)
 
         // Parse timing prefix if present
         let (timing, annexBData) = VideoFrameTiming.parse(from: payload)
@@ -295,6 +392,31 @@ public final class MirooReceiver: @unchecked Sendable {
             netTransitMs = max(0.5, smoothedRTTMs / 2.0)
         }
 
+        deliverFrame(
+            seq: seq,
+            pts: pts,
+            isKeyframe: isKeyframe,
+            annexBData: annexBData,
+            timing: timing,
+            networkReceiveTimestampNs: networkReceiveTimestampNs,
+            netTransitMs: netTransitMs,
+            jitterMs: smoothedJitterMs
+        )
+    }
+
+    private func deliverFrame(
+        seq: UInt64,
+        pts: Int64,
+        isKeyframe: Bool,
+        annexBData: Data,
+        timing: VideoFrameTiming?,
+        networkReceiveTimestampNs: UInt64,
+        netTransitMs: Double,
+        jitterMs: Double
+    ) {
+        metrics.recordFrameReceived(bytes: MirooHeader.headerSize + annexBData.count)
+        PipelineBenchmark.shared.recordFrameReceived(sequence: seq)
+
         // Verify sequence continuity
         if lastSequenceNumber > 0 && seq > lastSequenceNumber + 1 {
             let gap = seq - (lastSequenceNumber + 1)
@@ -310,7 +432,7 @@ public final class MirooReceiver: @unchecked Sendable {
             framesLoggedCount += 1
         }
 
-        onFrameReceived?(seq, pts, isKeyframe, annexBData, timing, networkReceiveTimestampNs, netTransitMs, smoothedJitterMs)
+        onFrameReceived?(seq, pts, isKeyframe, annexBData, timing, networkReceiveTimestampNs, netTransitMs, jitterMs)
     }
 
     // MARK: - Ping Timer
