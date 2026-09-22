@@ -151,4 +151,75 @@ public final class MacInputController: @unchecked Sendable {
             print("[Miroo Input] Connection-loss / cancel safety: Released held left mouse button at (\(Int(currentPos.x)), \(Int(currentPos.y))).")
         }
     }
+
+    // MARK: - Phase 6B: Trackpad Scrolling & Right Click
+
+    /// Configurable scroll sensitivity multiplier for smooth two-finger scrolling.
+    public static var scrollSensitivity: Float = 1.5
+    private var lastScrollLogTime: CFTimeInterval = 0
+
+    /// Injects a two-finger continuous scroll event at the current cursor position.
+    /// - Parameters:
+    ///   - deltaX: Horizontal scroll delta in points (positive = swipe right / scroll right)
+    ///   - deltaY: Vertical scroll delta in points (positive = swipe down / scroll down)
+    public func scroll(deltaX: Float, deltaY: Float) {
+        os_unfair_lock_lock(lock)
+        defer { os_unfair_lock_unlock(lock) }
+
+        // Safety: Release left button if held
+        if isLeftButtonDown {
+            releaseAllButtonsLocked()
+        }
+
+        let scaledDeltaX = deltaX * Self.scrollSensitivity
+        let scaledDeltaY = deltaY * Self.scrollSensitivity
+
+        guard abs(scaledDeltaX) >= 0.1 || abs(scaledDeltaY) >= 0.1 else { return }
+
+        let targetPoint = (lastCursorPosition != .zero) ? lastCursorPosition : (CGEvent(source: nil)?.location ?? .zero)
+
+        if let scrollEv = CGEvent(
+            scrollWheelEvent2Source: nil,
+            units: .pixel,
+            wheelCount: 2,
+            wheel1: Int32(round(scaledDeltaY)),
+            wheel2: Int32(round(scaledDeltaX)),
+            wheel3: 0
+        ) {
+            scrollEv.location = targetPoint
+            scrollEv.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
+            scrollEv.post(tap: .cghidEventTap)
+        }
+
+        let now = CACurrentMediaTime()
+        if now - lastScrollLogTime > 0.5 {
+            lastScrollLogTime = now
+            print(String(format: "[Miroo Input] Scroll delta (%.1f, %.1f) -> Mac (%d, %d)", scaledDeltaX, scaledDeltaY, Int(targetPoint.x), Int(targetPoint.y)))
+        }
+    }
+
+    /// Injects a right click (rightMouseDown followed by rightMouseUp) at the current cursor position.
+    public func rightClick() {
+        os_unfair_lock_lock(lock)
+        defer { os_unfair_lock_unlock(lock) }
+
+        // Safety: Release left button if held
+        if isLeftButtonDown {
+            releaseAllButtonsLocked()
+        }
+
+        let targetPoint = (lastCursorPosition != .zero) ? lastCursorPosition : (CGEvent(source: nil)?.location ?? .zero)
+
+        if let downEv = CGEvent(mouseEventSource: nil, mouseType: .rightMouseDown, mouseCursorPosition: targetPoint, mouseButton: .right) {
+            downEv.setIntegerValueField(.mouseEventClickState, value: 1)
+            downEv.post(tap: .cghidEventTap)
+        }
+
+        if let upEv = CGEvent(mouseEventSource: nil, mouseType: .rightMouseUp, mouseCursorPosition: targetPoint, mouseButton: .right) {
+            upEv.setIntegerValueField(.mouseEventClickState, value: 1)
+            upEv.post(tap: .cghidEventTap)
+        }
+
+        print(String(format: "[Miroo Input] Injected right click at (%d, %d)", Int(targetPoint.x), Int(targetPoint.y)))
+    }
 }

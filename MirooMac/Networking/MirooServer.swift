@@ -39,6 +39,8 @@ public final class MirooServer: @unchecked Sendable {
     public var onStreamingStarted: (() -> Void)?
     public var onOrientationChangeRequested: ((MirooOrientation) -> Void)?
     public var onTouchEvent: ((TouchEventPayload) -> Void)?
+    public var onScrollEvent: ((ScrollEventPayload) -> Void)?
+    public var onRightClick: ((RightClickPayload) -> Void)?
 
     public init(
         serviceName: String = Host.current().localizedName ?? "Miroo Mac",
@@ -245,6 +247,16 @@ public final class MirooServer: @unchecked Sendable {
         case .touchEvent:
             if let payload = message.decodeTouchEvent() {
                 onTouchEvent?(payload)
+            }
+
+        case .scrollEvent:
+            if let payload = message.decodeScrollEvent() {
+                onScrollEvent?(payload)
+            }
+
+        case .rightClick:
+            if let payload = message.decodeRightClick() {
+                onRightClick?(payload)
             }
 
         default:

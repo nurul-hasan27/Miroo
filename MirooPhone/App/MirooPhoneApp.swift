@@ -92,6 +92,14 @@ final class ReceiverViewModel: ObservableObject {
         receiver.sendTouchEvent(payload)
     }
 
+    func sendScrollEvent(_ payload: ScrollEventPayload) {
+        receiver.sendScrollEvent(payload)
+    }
+
+    func sendRightClick(_ payload: RightClickPayload) {
+        receiver.sendRightClick(payload)
+    }
+
     func sendCancelTouch() {
         let payload = TouchEventPayload(
             phase: .cancelled,
@@ -197,9 +205,18 @@ struct ReceiverContentView: View {
                     ZStack(alignment: .topLeading) {
                         Color.black.ignoresSafeArea()
 
-                        MirooMetalView(renderer: renderer, onTouchEvent: { payload in
-                            viewModel.sendTouchEvent(payload)
-                        })
+                        MirooMetalView(
+                            renderer: renderer,
+                            onTouchEvent: { payload in
+                                viewModel.sendTouchEvent(payload)
+                            },
+                            onScrollEvent: { payload in
+                                viewModel.sendScrollEvent(payload)
+                            },
+                            onRightClick: { payload in
+                                viewModel.sendRightClick(payload)
+                            }
+                        )
                         .ignoresSafeArea()
 
                         if viewModel.showHUD {

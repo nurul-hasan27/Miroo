@@ -104,6 +104,14 @@ final class MirooMacApp: NSObject, NSApplicationDelegate {
             inputController.handleTouchEvent(payload, displayID: manager.displayID)
         }
 
+        server.onScrollEvent = { [weak inputController] payload in
+            inputController?.scroll(deltaX: payload.deltaX, deltaY: payload.deltaY)
+        }
+
+        server.onRightClick = { [weak inputController] _ in
+            inputController?.rightClick()
+        }
+
         server.onClientDisconnected = { [weak inputController] in
             inputController?.releaseAllButtons()
         }

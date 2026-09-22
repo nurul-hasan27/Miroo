@@ -15,65 +15,78 @@ let rect = NSRect(
     height: winHeight
 )
 
-let style: NSWindow.StyleMask = [.titled, .closable, .resizable]
+let style: NSWindow.StyleMask = [.titled, .closable, .resizable, .miniaturizable]
 let window = NSWindow(contentRect: rect, styleMask: style, backing: .buffered, defer: false)
-window.title = "Miroo Extended Monitor"
-window.backgroundColor = .systemPurple
-window.level = .screenSaver
-window.collectionBehavior = [.canJoinAllSpaces, .stationary]
+window.title = "Miroo Phase 6B Test Monitor"
+window.backgroundColor = .windowBackgroundColor
+window.isMovableByWindowBackground = true
 window.isOpaque = true
 
 let contentView = NSView(frame: NSRect(x: 0, y: 0, width: winWidth, height: winHeight))
-contentView.wantsLayer = true
-contentView.layer?.backgroundColor = NSColor.systemIndigo.cgColor
 
-let titleLabel = NSTextField(labelWithString: "📱 Miroo Display")
-titleLabel.font = NSFont.boldSystemFont(ofSize: 28)
-titleLabel.textColor = .white
+// 1. Header label
+let titleLabel = NSTextField(labelWithString: "📱 Miroo Trackpad & Scroll Test")
+titleLabel.font = NSFont.boldSystemFont(ofSize: 20)
 titleLabel.alignment = .center
-titleLabel.frame = NSRect(x: 20, y: winHeight - 65, width: winWidth - 40, height: 40)
+titleLabel.frame = NSRect(x: 10, y: winHeight - 35, width: winWidth - 20, height: 26)
 contentView.addSubview(titleLabel)
 
-let subLabel = NSTextField(labelWithString: "Mac M1 ➔ iPhone 11 Live Stream")
-subLabel.font = NSFont.systemFont(ofSize: 16, weight: .medium)
-subLabel.textColor = .cyan
-subLabel.alignment = .center
-subLabel.frame = NSRect(x: 20, y: winHeight - 105, width: winWidth - 40, height: 28)
-contentView.addSubview(subLabel)
+// 2. Interactive Click Button
+var clickCount = 0
+let button = NSButton(title: "Click Me (Clicks: 0)", target: nil, action: nil)
+button.bezelStyle = .rounded
+button.frame = NSRect(x: 20, y: winHeight - 75, width: 180, height: 32)
+contentView.addSubview(button)
 
-let clockLabel = NSTextField(labelWithString: "00:00:00")
-clockLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 42, weight: .bold)
-clockLabel.textColor = .systemGreen
-clockLabel.alignment = .center
-clockLabel.frame = NSRect(x: 20, y: winHeight - 180, width: winWidth - 40, height: 55)
-contentView.addSubview(clockLabel)
+// 3. Status label
+let statusLabel = NSTextField(labelWithString: "Ready. 1-finger: move/click/drag | 2-finger: scroll | 2-finger tap: right-click")
+statusLabel.font = NSFont.systemFont(ofSize: 11)
+statusLabel.textColor = .secondaryLabelColor
+statusLabel.frame = NSRect(x: 210, y: winHeight - 72, width: winWidth - 220, height: 25)
+contentView.addSubview(statusLabel)
 
-let infoLabel = NSTextField(labelWithString: """
-• Hardware H.264 VideoToolbox
-• Metal CVMetalTextureCache
-• ScreenCaptureKit 60 FPS
-• Dynamic Portrait & Landscape
-• Sub-30ms End-to-End Latency
-""")
-infoLabel.font = NSFont.monospacedSystemFont(ofSize: 14, weight: .semibold)
-infoLabel.textColor = .white
-infoLabel.alignment = .left
-infoLabel.frame = NSRect(x: 40, y: 20, width: winWidth - 80, height: 140)
-contentView.addSubview(infoLabel)
+// 4. Scrollable Text View
+let scrollView = NSScrollView(frame: NSRect(x: 20, y: 20, width: winWidth - 40, height: winHeight - 110))
+scrollView.hasVerticalScroller = true
+scrollView.hasHorizontalScroller = true
+scrollView.autohidesScrollers = false
+scrollView.borderType = .bezelBorder
+
+let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: winWidth - 60, height: 2000))
+var textContent = "📜 MIROO PHASE 6B INTERACTIVE SCROLL TEST\n"
+textContent += "Use two fingers to scroll vertically and horizontally.\n"
+textContent += "Perform a stationary two-finger tap to open the context menu (Right Click).\n"
+textContent += "=========================================================\n\n"
+for i in 1...100 {
+    textContent += String(format: "Item Line #%03d: Testing smooth trackpad scrolling on Miroo Extended iPhone\n", i)
+}
+textView.string = textContent
+textView.isEditable = false
+textView.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+
+scrollView.documentView = textView
+contentView.addSubview(scrollView)
 
 window.contentView = contentView
 window.makeKeyAndOrderFront(nil)
 window.orderFrontRegardless()
 app.activate(ignoringOtherApps: true)
 
-let formatter = DateFormatter()
-formatter.dateFormat = "HH:mm:ss.SS"
+class ButtonHandler: NSObject {
+    @objc func buttonClicked(_ sender: NSButton) {
+        clickCount += 1
+        sender.title = "Clicked! Count: \(clickCount)"
+        print("[Test Window] Button clicked! Count = \(clickCount)")
+    }
+}
+let handler = ButtonHandler()
+button.target = handler
+button.action = #selector(ButtonHandler.buttonClicked(_:))
 
-print("Live window active at \(rect). Running for 300 seconds...")
+print("Live interactive window active at \(rect). Running for 300 seconds...")
 
 let deadline = Date().addingTimeInterval(300)
 while Date() < deadline {
-    clockLabel.stringValue = formatter.string(from: Date())
     if let event = app.nextEvent(matching: .any, until: Date().addingTimeInterval(0.05), inMode: .default, dequeue: true) {
         app.sendEvent(event)
     }

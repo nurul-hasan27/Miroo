@@ -149,6 +149,20 @@ public final class MirooReceiver: @unchecked Sendable {
         conn.send(message: msg)
     }
 
+    /// Sends a two-finger scroll event directly to the Mac server.
+    public func sendScrollEvent(_ payload: ScrollEventPayload) {
+        guard let conn = self.connection, conn.state == .streaming else { return }
+        let msg = MirooMessage.scrollEvent(payload)
+        conn.send(message: msg)
+    }
+
+    /// Sends a right click event directly to the Mac server.
+    public func sendRightClick(_ payload: RightClickPayload) {
+        guard let conn = self.connection, conn.state == .streaming else { return }
+        let msg = MirooMessage.rightClick(payload)
+        conn.send(message: msg)
+    }
+
     // MARK: - Handshake Flow
 
     private func handleMessage(_ message: MirooMessage, from conn: MirooConnection) {

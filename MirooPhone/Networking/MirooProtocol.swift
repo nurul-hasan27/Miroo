@@ -20,6 +20,8 @@ public enum MirooMessageType: UInt8, Sendable, CustomStringConvertible {
     case goodbye            = 8
     case displayOrientation = 9
     case touchEvent         = 10
+    case scrollEvent        = 11
+    case rightClick         = 12
 
     public var description: String {
         switch self {
@@ -33,6 +35,8 @@ public enum MirooMessageType: UInt8, Sendable, CustomStringConvertible {
         case .goodbye:            return "GOODBYE"
         case .displayOrientation: return "DISPLAY_ORIENTATION"
         case .touchEvent:         return "TOUCH_EVENT"
+        case .scrollEvent:        return "SCROLL_EVENT"
+        case .rightClick:         return "RIGHT_CLICK"
         }
     }
 }
@@ -367,6 +371,88 @@ public struct TouchEventPayload: Sendable, Equatable {
     }
 }
 
+// MARK: - Trackpad Scrolling & Right Click (Phase 6B)
+
+/// Binary payload for two-finger scrolling: 16 bytes fixed size.
+/// - 4 bytes: Float deltaX (signed, Big-Endian)
+/// - 4 bytes: Float deltaY (signed, Big-Endian)
+/// - 8 bytes: UInt64 timestampNs (Big-Endian)
+public struct ScrollEventPayload: Sendable, Equatable {
+    public let deltaX: Float
+    public let deltaY: Float
+    public let timestampNs: UInt64
+
+    public init(deltaX: Float, deltaY: Float, timestampNs: UInt64 = 0) {
+        self.deltaX = deltaX
+        self.deltaY = deltaY
+        self.timestampNs = timestampNs
+    }
+
+    /// Serializes scroll payload to 16 bytes big-endian binary.
+    public func serialize() -> Data {
+        var data = Data(capacity: 16)
+        var xBits = deltaX.bitPattern.bigEndian
+        var yBits = deltaY.bitPattern.bigEndian
+        var ts = timestampNs.bigEndian
+
+        withUnsafeBytes(of: &xBits) { data.append(contentsOf: $0) }
+        withUnsafeBytes(of: &yBits) { data.append(contentsOf: $0) }
+        withUnsafeBytes(of: &ts) { data.append(contentsOf: $0) }
+
+        return data
+    }
+
+    /// Safely parses a 16-byte binary scroll payload.
+    public static func deserialize(from data: Data) -> ScrollEventPayload? {
+        guard data.count >= 16 else { return nil }
+        return data.withUnsafeBytes { rawBuffer -> ScrollEventPayload? in
+            guard let base = rawBuffer.baseAddress else { return nil }
+            var xBits: UInt32 = 0
+            var yBits: UInt32 = 0
+            var ts: UInt64 = 0
+
+            memcpy(&xBits, base, 4)
+            memcpy(&yBits, base + 4, 4)
+            memcpy(&ts, base + 8, 8)
+
+            let deltaX = Float(bitPattern: UInt32(bigEndian: xBits))
+            let deltaY = Float(bitPattern: UInt32(bigEndian: yBits))
+            let timestampNs = UInt64(bigEndian: ts)
+
+            return ScrollEventPayload(deltaX: deltaX, deltaY: deltaY, timestampNs: timestampNs)
+        }
+    }
+}
+
+/// Binary payload for two-finger tap right click: 8 bytes fixed size.
+/// - 8 bytes: UInt64 timestampNs (Big-Endian)
+public struct RightClickPayload: Sendable, Equatable {
+    public let timestampNs: UInt64
+
+    public init(timestampNs: UInt64 = 0) {
+        self.timestampNs = timestampNs
+    }
+
+    /// Serializes right click payload to 8 bytes big-endian binary.
+    public func serialize() -> Data {
+        var data = Data(capacity: 8)
+        var ts = timestampNs.bigEndian
+        withUnsafeBytes(of: &ts) { data.append(contentsOf: $0) }
+        return data
+    }
+
+    /// Safely parses an 8-byte binary right click payload.
+    public static func deserialize(from data: Data) -> RightClickPayload? {
+        guard data.count >= 8 else { return nil }
+        return data.withUnsafeBytes { rawBuffer -> RightClickPayload? in
+            guard let base = rawBuffer.baseAddress else { return nil }
+            var ts: UInt64 = 0
+            memcpy(&ts, base, 8)
+            return RightClickPayload(timestampNs: UInt64(bigEndian: ts))
+        }
+    }
+}
+
 // MARK: - Video Frame Timing Metadata (Phase 6 Diagnostics)
 
 public struct VideoFrameTiming: Sendable {
@@ -506,6 +592,24 @@ extension MirooMessage {
     public func decodeTouchEvent() -> TouchEventPayload? {
         guard header.messageType == .touchEvent else { return nil }
         return TouchEventPayload.deserialize(from: payload)
+    }
+
+    public static func scrollEvent(_ payload: ScrollEventPayload) -> MirooMessage {
+        return MirooMessage(type: .scrollEvent, payload: payload.serialize())
+    }
+
+    public func decodeScrollEvent() -> ScrollEventPayload? {
+        guard header.messageType == .scrollEvent else { return nil }
+        return ScrollEventPayload.deserialize(from: payload)
+    }
+
+    public static func rightClick(_ payload: RightClickPayload) -> MirooMessage {
+        return MirooMessage(type: .rightClick, payload: payload.serialize())
+    }
+
+    public func decodeRightClick() -> RightClickPayload? {
+        guard header.messageType == .rightClick else { return nil }
+        return RightClickPayload.deserialize(from: payload)
     }
 
     public func decodePayload<T: Decodable>(_ type: T.Type) -> T? {

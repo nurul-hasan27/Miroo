@@ -9,7 +9,8 @@ let package = Package(
     products: [
         .executable(name: "MirooMac", targets: ["MirooMac"]),
         .executable(name: "MirooReceiverCLI", targets: ["MirooReceiverCLI"]),
-        .executable(name: "Phase6ATests", targets: ["Phase6ATests"])
+        .executable(name: "Phase6ATests", targets: ["Phase6ATests"]),
+        .executable(name: "Phase6BTests", targets: ["Phase6BTests"])
     ],
     targets: [
         .target(
@@ -77,10 +78,28 @@ let package = Package(
                 "DecodeReconnectionTest",
                 "IntegrationTest",
                 "MovingContentTest.swift",
+                "Phase6BTests.swift",
                 "main.swift"
             ],
             sources: [
                 "Phase6ATests.swift"
+            ]
+        ),
+        .executableTarget(
+            name: "Phase6BTests",
+            dependencies: [
+                "MirooNetworking"
+            ],
+            path: "Tests",
+            exclude: [
+                "DecodeReconnectionTest",
+                "IntegrationTest",
+                "MovingContentTest.swift",
+                "Phase6ATests.swift",
+                "main.swift"
+            ],
+            sources: [
+                "Phase6BTests.swift"
             ]
         )
     ]
