@@ -142,6 +142,13 @@ public final class MirooReceiver: @unchecked Sendable {
         }
     }
 
+    /// Sends a touch event directly to the Mac server.
+    public func sendTouchEvent(_ payload: TouchEventPayload) {
+        guard let conn = self.connection, conn.state == .streaming else { return }
+        let msg = MirooMessage.touchEvent(payload)
+        conn.send(message: msg)
+    }
+
     // MARK: - Handshake Flow
 
     private func handleMessage(_ message: MirooMessage, from conn: MirooConnection) {

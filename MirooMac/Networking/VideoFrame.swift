@@ -44,6 +44,13 @@ public struct FrameDiagnostics: Sendable {
     public var metalGpuMs: Double
     public var presentationMode: String
 
+    // Usable Display / Viewport Diagnostics
+    public var screenPixelsStr: String
+    public var safeAreaInsetsStr: String
+    public var usableViewportStr: String
+    public var videoSizeStr: String
+    public var renderRectStr: String
+
     public init(
         captureMs: Double = 0.0,
         encodeMs: Double = 0.0,
@@ -71,7 +78,12 @@ public struct FrameDiagnostics: Sendable {
         metalDrawableWaitMs: Double = 0.1,
         metalEncodeMs: Double = 0.2,
         metalGpuMs: Double = 0.5,
-        presentationMode: String = "Push"
+        presentationMode: String = "Push",
+        screenPixelsStr: String = "",
+        safeAreaInsetsStr: String = "",
+        usableViewportStr: String = "",
+        videoSizeStr: String = "",
+        renderRectStr: String = ""
     ) {
         self.captureMs = captureMs
         self.encodeMs = encodeMs
@@ -100,6 +112,11 @@ public struct FrameDiagnostics: Sendable {
         self.metalEncodeMs = metalEncodeMs
         self.metalGpuMs = metalGpuMs
         self.presentationMode = presentationMode
+        self.screenPixelsStr = screenPixelsStr
+        self.safeAreaInsetsStr = safeAreaInsetsStr
+        self.usableViewportStr = usableViewportStr
+        self.videoSizeStr = videoSizeStr
+        self.renderRectStr = renderRectStr
     }
 }
 

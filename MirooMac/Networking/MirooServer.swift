@@ -38,6 +38,7 @@ public final class MirooServer: @unchecked Sendable {
     public var onClientDisconnected: (() -> Void)?
     public var onStreamingStarted: (() -> Void)?
     public var onOrientationChangeRequested: ((MirooOrientation) -> Void)?
+    public var onTouchEvent: ((TouchEventPayload) -> Void)?
 
     public init(
         serviceName: String = Host.current().localizedName ?? "Miroo Mac",
@@ -239,6 +240,11 @@ public final class MirooServer: @unchecked Sendable {
             if let payload = message.decodePayload(DisplayOrientationPayload.self) {
                 print("[Miroo Server] Received DISPLAY_ORIENTATION from client: \(payload.orientation)")
                 onOrientationChangeRequested?(payload.orientation)
+            }
+
+        case .touchEvent:
+            if let payload = message.decodeTouchEvent() {
+                onTouchEvent?(payload)
             }
 
         default:

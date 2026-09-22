@@ -10,6 +10,7 @@ import CoreMedia
 import CoreVideo
 import VideoToolbox
 import QuartzCore
+import os.lock
 
 public enum VideoEncoderError: LocalizedError {
     case sessionCreationFailed(OSStatus)
@@ -44,15 +45,19 @@ public final class VideoEncoder {
     public let averageBitrate: Int32
     public let keyframeInterval: Int32
 
+    private var sessionLock = os_unfair_lock_s()
+
     /// Dynamically reconfigures the encoder for new frame dimensions (orientation change).
     /// Flushes and tears down the old compression session, resets session state, and creates a new one.
     public func reconfigure(width: Int32, height: Int32) throws {
+        os_unfair_lock_lock(&sessionLock)
+        defer { os_unfair_lock_unlock(&sessionLock) }
         guard self.width != width || self.height != height else { return }
         print("[Miroo] Reconfiguring VideoEncoder: \(self.width)x\(self.height) -> \(width)x\(height)...")
-        invalidate()
+        invalidateLocked()
         self.width = width
         self.height = height
-        try setup()
+        try setupLocked()
         print("[Miroo] VideoEncoder reconfigured for \(width)x\(height).")
     }
 
@@ -105,6 +110,12 @@ public final class VideoEncoder {
 
     /// Initializes and prepares the VTCompressionSession.
     public func setup() throws {
+        os_unfair_lock_lock(&sessionLock)
+        defer { os_unfair_lock_unlock(&sessionLock) }
+        try setupLocked()
+    }
+
+    private func setupLocked() throws {
         guard session == nil else { return }
 
         // 1. Output callback for compressed sample buffers
@@ -203,7 +214,9 @@ public final class VideoEncoder {
 
     /// Submits a raw CVPixelBuffer for hardware compression.
     public func encode(pixelBuffer: CVPixelBuffer, presentationTime: CMTime, forceKeyframe: Bool = false) {
+        os_unfair_lock_lock(&sessionLock)
         guard let session = session else {
+            os_unfair_lock_unlock(&sessionLock)
             totalFailures += 1
             return
         }
@@ -229,6 +242,7 @@ public final class VideoEncoder {
             sourceFrameRefcon: UnsafeMutableRawPointer(timePtr),
             infoFlagsOut: nil
         )
+        os_unfair_lock_unlock(&sessionLock)
 
         if status != noErr {
             totalFailures += 1
@@ -239,14 +253,26 @@ public final class VideoEncoder {
 
     /// Flushes any pending frames.
     public func flush() {
+        os_unfair_lock_lock(&sessionLock)
+        defer { os_unfair_lock_unlock(&sessionLock) }
+        flushLocked()
+    }
+
+    private func flushLocked() {
         guard let session = session else { return }
         VTCompressionSessionCompleteFrames(session, untilPresentationTimeStamp: .invalid)
     }
 
     /// Invalidates and releases the compression session.
     public func invalidate() {
+        os_unfair_lock_lock(&sessionLock)
+        defer { os_unfair_lock_unlock(&sessionLock) }
+        invalidateLocked()
+    }
+
+    private func invalidateLocked() {
         if let session = session {
-            flush()
+            flushLocked()
             VTCompressionSessionInvalidate(session)
             self.session = nil
         }

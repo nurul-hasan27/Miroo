@@ -19,6 +19,7 @@ public enum MirooMessageType: UInt8, Sendable, CustomStringConvertible {
     case pong               = 7
     case goodbye            = 8
     case displayOrientation = 9
+    case touchEvent         = 10
 
     public var description: String {
         switch self {
@@ -31,6 +32,7 @@ public enum MirooMessageType: UInt8, Sendable, CustomStringConvertible {
         case .pong:               return "PONG"
         case .goodbye:            return "GOODBYE"
         case .displayOrientation: return "DISPLAY_ORIENTATION"
+        case .touchEvent:         return "TOUCH_EVENT"
         }
     }
 }
@@ -289,6 +291,82 @@ public struct GoodbyePayload: Codable, Sendable {
     }
 }
 
+// MARK: - Touch Input Payloads (Phase 6A)
+
+public struct TouchEventPayload: Sendable, Equatable {
+    public enum Phase: UInt8, Sendable, Codable {
+        case began = 0
+        case moved = 1
+        case ended = 2
+        case cancelled = 3
+    }
+
+    public let phase: Phase
+    public let touchID: UInt32
+    public let x: Float // 0.0 ... 1.0 normalized relative to usable contentRect
+    public let y: Float // 0.0 ... 1.0 normalized relative to usable contentRect
+    public let timestampNs: UInt64
+
+    public init(phase: Phase, touchID: UInt32 = 0, x: Float, y: Float, timestampNs: UInt64 = 0) {
+        self.phase = phase
+        self.touchID = touchID
+        self.x = x
+        self.y = y
+        self.timestampNs = timestampNs
+    }
+
+    /// Serializes touch payload to 21 bytes big-endian binary.
+    public func serialize() -> Data {
+        var data = Data(capacity: 21)
+        var p = phase.rawValue
+        var tid = touchID.bigEndian
+        var xBits = x.bitPattern.bigEndian
+        var yBits = y.bitPattern.bigEndian
+        var ts = timestampNs.bigEndian
+
+        withUnsafeBytes(of: &p) { data.append(contentsOf: $0) }
+        withUnsafeBytes(of: &tid) { data.append(contentsOf: $0) }
+        withUnsafeBytes(of: &xBits) { data.append(contentsOf: $0) }
+        withUnsafeBytes(of: &yBits) { data.append(contentsOf: $0) }
+        withUnsafeBytes(of: &ts) { data.append(contentsOf: $0) }
+
+        return data
+    }
+
+    /// Safely parses a 21-byte binary touch payload.
+    public static func deserialize(from data: Data) -> TouchEventPayload? {
+        guard data.count >= 21 else { return nil }
+        return data.withUnsafeBytes { rawBuffer -> TouchEventPayload? in
+            guard let base = rawBuffer.baseAddress else { return nil }
+            let phaseRaw = base.load(as: UInt8.self)
+            guard let phase = Phase(rawValue: phaseRaw) else { return nil }
+
+            var tid: UInt32 = 0
+            var xBits: UInt32 = 0
+            var yBits: UInt32 = 0
+            var ts: UInt64 = 0
+
+            memcpy(&tid, base + 1, 4)
+            memcpy(&xBits, base + 5, 4)
+            memcpy(&yBits, base + 9, 4)
+            memcpy(&ts, base + 13, 8)
+
+            let touchID = UInt32(bigEndian: tid)
+            let x = Float(bitPattern: UInt32(bigEndian: xBits))
+            let y = Float(bitPattern: UInt32(bigEndian: yBits))
+            let timestampNs = UInt64(bigEndian: ts)
+
+            return TouchEventPayload(
+                phase: phase,
+                touchID: touchID,
+                x: x,
+                y: y,
+                timestampNs: timestampNs
+            )
+        }
+    }
+}
+
 // MARK: - Video Frame Timing Metadata (Phase 6 Diagnostics)
 
 public struct VideoFrameTiming: Sendable {
@@ -419,6 +497,15 @@ extension MirooMessage {
         let payload = GoodbyePayload(reason: reason)
         let data = (try? JSONEncoder().encode(payload)) ?? Data()
         return MirooMessage(type: .goodbye, payload: data)
+    }
+
+    public static func touchEvent(_ payload: TouchEventPayload) -> MirooMessage {
+        return MirooMessage(type: .touchEvent, payload: payload.serialize())
+    }
+
+    public func decodeTouchEvent() -> TouchEventPayload? {
+        guard header.messageType == .touchEvent else { return nil }
+        return TouchEventPayload.deserialize(from: payload)
     }
 
     public func decodePayload<T: Decodable>(_ type: T.Type) -> T? {

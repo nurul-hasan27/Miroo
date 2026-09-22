@@ -14,10 +14,16 @@ import Combine
 @main
 struct MirooPhoneApp: App {
     @StateObject private var receiverViewModel = ReceiverViewModel()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
             ReceiverContentView(viewModel: receiverViewModel)
+                .onChange(of: scenePhase) { newPhase in
+                    if newPhase != .active {
+                        receiverViewModel.sendCancelTouch()
+                    }
+                }
         }
     }
 }
@@ -80,6 +86,21 @@ final class ReceiverViewModel: ObservableObject {
         currentOrientation = orientation
         print("[Miroo App] Explicitly forcing orientation switch to: \(orientation.rawValue)")
         receiver.sendOrientation(orientation)
+    }
+
+    func sendTouchEvent(_ payload: TouchEventPayload) {
+        receiver.sendTouchEvent(payload)
+    }
+
+    func sendCancelTouch() {
+        let payload = TouchEventPayload(
+            phase: .cancelled,
+            touchID: 0,
+            x: 0.5,
+            y: 0.5,
+            timestampNs: UInt64(CACurrentMediaTime() * 1_000_000_000)
+        )
+        receiver.sendTouchEvent(payload)
     }
 
     private func setupPipeline() {
@@ -176,13 +197,10 @@ struct ReceiverContentView: View {
                     ZStack(alignment: .topLeading) {
                         Color.black.ignoresSafeArea()
 
-                        MirooMetalView(renderer: renderer)
-                            .ignoresSafeArea()
-                            .onTapGesture {
-                                withAnimation(.easeInOut(duration: 0.2)) {
-                                    viewModel.showHUD.toggle()
-                                }
-                            }
+                        MirooMetalView(renderer: renderer, onTouchEvent: { payload in
+                            viewModel.sendTouchEvent(payload)
+                        })
+                        .ignoresSafeArea()
 
                         if viewModel.showHUD {
                             DiagnosticHUDView(
@@ -203,21 +221,34 @@ struct ReceiverContentView: View {
                             .transition(.opacity)
                         }
 
-                        // Disconnect button in top-right
+                        // Top-Right Control Buttons: HUD Toggle & Disconnect
                         VStack {
-                            HStack {
+                            HStack(spacing: 12) {
                                 Spacer()
-                                Button(action: { viewModel.toggleConnection() }) {
-                                    Image(systemName: "xmark.circle.fill")
-                                        .font(.title2)
-                                        .foregroundColor(.white.opacity(0.8))
-                                        .padding(8)
+                                Button(action: {
+                                    withAnimation(.easeInOut(duration: 0.2)) {
+                                        viewModel.showHUD.toggle()
+                                    }
+                                }) {
+                                    Image(systemName: "chart.xyaxis.line")
+                                        .font(.system(size: 15, weight: .semibold))
+                                        .foregroundColor(.white.opacity(0.85))
+                                        .frame(width: 36, height: 36)
                                         .background(.ultraThinMaterial)
                                         .clipShape(Circle())
                                 }
-                                .padding(.top, isLandscape ? 20 : 48)
-                                .padding(.trailing, isLandscape ? 44 : 16)
+
+                                Button(action: { viewModel.toggleConnection() }) {
+                                    Image(systemName: "xmark")
+                                        .font(.system(size: 15, weight: .bold))
+                                        .foregroundColor(.white.opacity(0.85))
+                                        .frame(width: 36, height: 36)
+                                        .background(.ultraThinMaterial)
+                                        .clipShape(Circle())
+                                }
                             }
+                            .padding(.top, isLandscape ? 20 : 48)
+                            .padding(.trailing, isLandscape ? 44 : 16)
                             Spacer()
                         }
                     }
@@ -379,9 +410,18 @@ struct DiagnosticHUDView: View {
             hudRow(label: "Dropped", value: String(format: "%.1f %%", d.dropPercentage))
             hudRow(label: "Queue Depth", value: "\(d.queueDepth) frame\(d.queueDepth == 1 ? "" : "s")")
             hudRow(label: "Bitrate", value: String(format: "%.1f Mbps", d.bitrateMbps))
+
+            if !d.renderRectStr.isEmpty {
+                Divider().background(Color.white.opacity(0.25))
+                hudRow(label: "Screen", value: d.screenPixelsStr)
+                hudRow(label: "Safe Area", value: d.safeAreaInsetsStr)
+                hudRow(label: "Usable", value: d.usableViewportStr)
+                hudRow(label: "Video", value: d.videoSizeStr)
+                hudRow(label: "RenderRect", value: d.renderRectStr)
+            }
         }
         .padding(12)
-        .frame(width: 220)
+        .frame(width: 250)
         .background(Color.black.opacity(0.80))
         .cornerRadius(12)
         .overlay(

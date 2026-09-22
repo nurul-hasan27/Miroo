@@ -8,7 +8,8 @@ let package = Package(
     ],
     products: [
         .executable(name: "MirooMac", targets: ["MirooMac"]),
-        .executable(name: "MirooReceiverCLI", targets: ["MirooReceiverCLI"])
+        .executable(name: "MirooReceiverCLI", targets: ["MirooReceiverCLI"]),
+        .executable(name: "Phase6ATests", targets: ["Phase6ATests"])
     ],
     targets: [
         .target(
@@ -32,7 +33,8 @@ let package = Package(
                 "H264NALUParser.swift",
                 "H264Decoder.swift",
                 "MetalRenderer.swift",
-                "MirooMetalView.swift"
+                "MirooMetalView.swift",
+                "MacInputController.swift"
             ]
         ),
         .executableTarget(
@@ -63,6 +65,22 @@ let package = Package(
             path: "MirooReceiverCLI",
             sources: [
                 "main.swift"
+            ]
+        ),
+        .executableTarget(
+            name: "Phase6ATests",
+            dependencies: [
+                "MirooNetworking"
+            ],
+            path: "Tests",
+            exclude: [
+                "DecodeReconnectionTest",
+                "IntegrationTest",
+                "MovingContentTest.swift",
+                "main.swift"
+            ],
+            sources: [
+                "Phase6ATests.swift"
             ]
         )
     ]

@@ -2,8 +2,9 @@
 //  MetalRenderer.swift
 //  Miroo
 //
-//  Phase 5: High-performance Metal renderer with CVMetalTextureCache zero-copy
-//  bi-planar YUV420 to RGB GPU conversion, aspect-fit scaling, and bounded display queue.
+//  Phase 5 & Usable Display: High-performance Metal renderer with CVMetalTextureCache zero-copy
+//  bi-planar YUV420 to RGB GPU conversion, authoritative safe-area tracking, hardware MTLViewport
+//  aspect-fit scaling, and notch exclusion.
 //
 
 import Foundation
@@ -13,6 +14,226 @@ import CoreVideo
 import os.lock
 import QuartzCore
 
+#if os(iOS)
+import UIKit
+#elseif os(macOS)
+import AppKit
+#endif
+
+// MARK: - Viewport & Layout Geometry
+
+/// Encapsulates the complete layout, safe area, and transformation geometry for rendering
+/// a decoded Mac display video frame within the usable area of the iPhone / host screen.
+public struct RenderViewportLayout: Equatable, Sendable {
+    /// Full view bounds in logical points
+    public let viewBounds: CGRect
+
+    #if os(iOS)
+    /// Physical safe area insets in logical points
+    public let safeAreaInsets: UIEdgeInsets
+    #endif
+
+    /// Usable viewport rectangle in logical points (bounds minus safe-area insets)
+    public let usableRectPoints: CGRect
+
+    /// Usable viewport rectangle in device pixels
+    public let usableRectPixels: CGRect
+
+    /// Native video frame size in pixels
+    public let videoSize: CGSize
+
+    /// Final aspect-fit content rectangle in logical points (used for touch mapping)
+    public let contentRectPoints: CGRect
+
+    /// Final aspect-fit render rectangle in device pixels (passed to MTLViewport / MTLScissorRect)
+    public let renderRectPixels: CGRect
+
+    /// Metal drawable size in device pixels
+    public let drawableSize: CGSize
+
+    /// Scaling factor from logical points to device pixels
+    public let scaleX: CGFloat
+    public let scaleY: CGFloat
+
+    #if os(iOS)
+    public init(
+        viewBounds: CGRect,
+        safeAreaInsets: UIEdgeInsets,
+        usableRectPoints: CGRect,
+        usableRectPixels: CGRect,
+        videoSize: CGSize,
+        contentRectPoints: CGRect,
+        renderRectPixels: CGRect,
+        drawableSize: CGSize,
+        scaleX: CGFloat,
+        scaleY: CGFloat
+    ) {
+        self.viewBounds = viewBounds
+        self.safeAreaInsets = safeAreaInsets
+        self.usableRectPoints = usableRectPoints
+        self.usableRectPixels = usableRectPixels
+        self.videoSize = videoSize
+        self.contentRectPoints = contentRectPoints
+        self.renderRectPixels = renderRectPixels
+        self.drawableSize = drawableSize
+        self.scaleX = scaleX
+        self.scaleY = scaleY
+    }
+    #else
+    public init(
+        viewBounds: CGRect,
+        usableRectPoints: CGRect,
+        usableRectPixels: CGRect,
+        videoSize: CGSize,
+        contentRectPoints: CGRect,
+        renderRectPixels: CGRect,
+        drawableSize: CGSize,
+        scaleX: CGFloat,
+        scaleY: CGFloat
+    ) {
+        self.viewBounds = viewBounds
+        self.usableRectPoints = usableRectPoints
+        self.usableRectPixels = usableRectPixels
+        self.videoSize = videoSize
+        self.contentRectPoints = contentRectPoints
+        self.renderRectPixels = renderRectPixels
+        self.drawableSize = drawableSize
+        self.scaleX = scaleX
+        self.scaleY = scaleY
+    }
+    #endif
+
+    #if os(iOS)
+    /// Authoritative safe-area and Aspect-Fit calculation for iOS devices.
+    /// Excludes notch, home indicator, and rounded corners according to UIKit insets.
+    public static func compute(
+        viewBounds: CGRect,
+        safeAreaInsets: UIEdgeInsets,
+        drawableSize: CGSize,
+        videoSize: CGSize
+    ) -> RenderViewportLayout {
+        let scaleX: CGFloat = viewBounds.width > 0 ? (drawableSize.width / viewBounds.width) : 1.0
+        let scaleY: CGFloat = viewBounds.height > 0 ? (drawableSize.height / viewBounds.height) : 1.0
+
+        let usableX = safeAreaInsets.left
+        let usableY = safeAreaInsets.top
+        let usableWidth = max(0, viewBounds.width - safeAreaInsets.left - safeAreaInsets.right)
+        let usableHeight = max(0, viewBounds.height - safeAreaInsets.top - safeAreaInsets.bottom)
+        let usableRectPoints = CGRect(x: usableX, y: usableY, width: usableWidth, height: usableHeight)
+
+        let usableRectPixels = CGRect(
+            x: usableX * scaleX,
+            y: usableY * scaleY,
+            width: usableWidth * scaleX,
+            height: usableHeight * scaleY
+        )
+
+        var renderRectPixels = CGRect.zero
+        var contentRectPoints = CGRect.zero
+
+        if videoSize.width > 0 && videoSize.height > 0 && usableRectPixels.width > 0 && usableRectPixels.height > 0 {
+            let fitScale = min(
+                usableRectPixels.width / videoSize.width,
+                usableRectPixels.height / videoSize.height
+            )
+            let renderWidth = videoSize.width * fitScale
+            let renderHeight = videoSize.height * fitScale
+            let renderX = usableRectPixels.minX + (usableRectPixels.width - renderWidth) / 2.0
+            let renderY = usableRectPixels.minY + (usableRectPixels.height - renderHeight) / 2.0
+            renderRectPixels = CGRect(x: renderX, y: renderY, width: renderWidth, height: renderHeight)
+
+            contentRectPoints = CGRect(
+                x: renderX / scaleX,
+                y: renderY / scaleY,
+                width: renderWidth / scaleX,
+                height: renderHeight / scaleY
+            )
+        }
+
+        return RenderViewportLayout(
+            viewBounds: viewBounds,
+            safeAreaInsets: safeAreaInsets,
+            usableRectPoints: usableRectPoints,
+            usableRectPixels: usableRectPixels,
+            videoSize: videoSize,
+            contentRectPoints: contentRectPoints,
+            renderRectPixels: renderRectPixels,
+            drawableSize: drawableSize,
+            scaleX: scaleX,
+            scaleY: scaleY
+        )
+    }
+    #elseif os(macOS)
+    public static func compute(
+        viewBounds: CGRect,
+        drawableSize: CGSize,
+        videoSize: CGSize
+    ) -> RenderViewportLayout {
+        let scaleX: CGFloat = viewBounds.width > 0 ? (drawableSize.width / viewBounds.width) : 1.0
+        let scaleY: CGFloat = viewBounds.height > 0 ? (drawableSize.height / viewBounds.height) : 1.0
+        let usableRectPoints = viewBounds
+        let usableRectPixels = CGRect(origin: .zero, size: drawableSize)
+
+        var renderRectPixels = CGRect.zero
+        var contentRectPoints = CGRect.zero
+
+        if videoSize.width > 0 && videoSize.height > 0 && usableRectPixels.width > 0 && usableRectPixels.height > 0 {
+            let fitScale = min(
+                usableRectPixels.width / videoSize.width,
+                usableRectPixels.height / videoSize.height
+            )
+            let renderWidth = videoSize.width * fitScale
+            let renderHeight = videoSize.height * fitScale
+            let renderX = (usableRectPixels.width - renderWidth) / 2.0
+            let renderY = (usableRectPixels.height - renderHeight) / 2.0
+            renderRectPixels = CGRect(x: renderX, y: renderY, width: renderWidth, height: renderHeight)
+
+            contentRectPoints = CGRect(
+                x: renderX / scaleX,
+                y: renderY / scaleY,
+                width: renderWidth / scaleX,
+                height: renderHeight / scaleY
+            )
+        }
+
+        return RenderViewportLayout(
+            viewBounds: viewBounds,
+            usableRectPoints: usableRectPoints,
+            usableRectPixels: usableRectPixels,
+            videoSize: videoSize,
+            contentRectPoints: contentRectPoints,
+            renderRectPixels: renderRectPixels,
+            drawableSize: drawableSize,
+            scaleX: scaleX,
+            scaleY: scaleY
+        )
+    }
+    #endif
+
+    // MARK: - Touch-to-Video Coordinate Transformation
+    /// Converts a touch point on the host view (in logical points) into normalized video coordinates (0.0 ... 1.0).
+    /// If clamp is false, returns nil if the touch occurred outside contentRectPoints (e.g. initial touch in notch or letterbox area).
+    /// If clamp is true, clamps to [0.0, 1.0] allowing continuous drag tracking to screen edges.
+    public func touchToNormalizedVideoCoordinate(_ point: CGPoint, clamp: Bool = false) -> CGPoint? {
+        guard contentRectPoints.width > 0, contentRectPoints.height > 0 else { return nil }
+        if !clamp && !contentRectPoints.contains(point) {
+            return nil
+        }
+        let normX = (point.x - contentRectPoints.minX) / contentRectPoints.width
+        let normY = (point.y - contentRectPoints.minY) / contentRectPoints.height
+        return CGPoint(x: min(max(normX, 0.0), 1.0), y: min(max(normY, 0.0), 1.0))
+    }
+
+    /// Converts a touch point on the host view (in logical points) to Mac virtual display coordinates.
+    public func touchToMacCoordinate(_ point: CGPoint, virtualDisplaySize: CGSize? = nil) -> CGPoint? {
+        guard let norm = touchToNormalizedVideoCoordinate(point) else { return nil }
+        let targetSize = virtualDisplaySize ?? videoSize
+        return CGPoint(x: norm.x * targetSize.width, y: norm.y * targetSize.height)
+    }
+}
+
+// MARK: - Display Uniforms
+
 public struct DisplayUniforms {
     public var scale: SIMD2<Float>
 
@@ -20,6 +241,8 @@ public struct DisplayUniforms {
         self.scale = scale
     }
 }
+
+// MARK: - Metal Renderer
 
 public final class MetalRenderer: NSObject, MTKViewDelegate, @unchecked Sendable {
 
@@ -31,6 +254,7 @@ public final class MetalRenderer: NSObject, MTKViewDelegate, @unchecked Sendable
 
     // Bounded Display Queue (depth 1 to guarantee zero display buffering)
     private var latestFrame: DecodedVideoFrame?
+    private var lastRenderedFrame: DecodedVideoFrame?
     private var lock = os_unfair_lock_s()
 
     // Telemetry & Metrics
@@ -61,6 +285,27 @@ public final class MetalRenderer: NSObject, MTKViewDelegate, @unchecked Sendable
 
     // Callback for live UI telemetry updates
     public var onTelemetryUpdate: ((_ renderedFPS: Double, _ renderLatencyMs: Double, _ decodeLatencyMs: Double, _ g2gEstimateMs: Double) -> Void)?
+
+    // Authoritative Viewport & Safe-Area Layout
+    public private(set) var currentViewportLayout: RenderViewportLayout?
+    private var cachedViewBounds: CGRect = .zero
+    #if os(iOS)
+    private var cachedSafeAreaInsets: UIEdgeInsets?
+    #endif
+    private var lastLoggedLayout: RenderViewportLayout?
+
+    #if os(iOS)
+    public func updateViewLayout(bounds: CGRect, safeAreaInsets: UIEdgeInsets) {
+        self.cachedViewBounds = bounds
+        if safeAreaInsets != .zero {
+            self.cachedSafeAreaInsets = safeAreaInsets
+        }
+    }
+    #elseif os(macOS)
+    public func updateViewLayout(bounds: CGRect) {
+        self.cachedViewBounds = bounds
+    }
+    #endif
 
     public init?(device: MTLDevice? = MTLCreateSystemDefaultDevice()) {
         guard let device = device,
@@ -196,13 +441,22 @@ public final class MetalRenderer: NSObject, MTKViewDelegate, @unchecked Sendable
     public func draw(in view: MTKView) {
         let renderStartTime = CACurrentMediaTime()
 
-        // 1. Pop latest frame from display queue
+        // 1. Pop latest frame or retain last rendered frame for seamless layout redraw
         os_unfair_lock_lock(&lock)
-        guard let frame = latestFrame else {
+        let frame: DecodedVideoFrame
+        let isNewFrame: Bool
+        if let next = latestFrame {
+            frame = next
+            latestFrame = nil
+            lastRenderedFrame = next
+            isNewFrame = true
+        } else if let cached = lastRenderedFrame {
+            frame = cached
+            isNewFrame = false
+        } else {
             os_unfair_lock_unlock(&lock)
             return
         }
-        latestFrame = nil
         os_unfair_lock_unlock(&lock)
 
         // 2. Obtain textures from CVPixelBuffer using CVMetalTextureCache
@@ -254,35 +508,86 @@ public final class MetalRenderer: NSObject, MTKViewDelegate, @unchecked Sendable
             return
         }
 
-        // 3. Compute Aspect-Fit scale uniforms
-        let viewWidth = Float(view.drawableSize.width)
-        let viewHeight = Float(view.drawableSize.height)
-        let videoWidth = Float(frame.width)
-        let videoHeight = Float(frame.height)
+        // 3. Authoritative Safe-Area & Aspect-Fit Layout Calculation
+        let viewBounds = (view.bounds.width > 0 && view.bounds.height > 0) ? view.bounds : cachedViewBounds
+        let videoSize = CGSize(width: frame.width, height: frame.height)
 
-        var scale = SIMD2<Float>(1.0, 1.0)
-        if viewWidth > 0 && viewHeight > 0 && videoWidth > 0 && videoHeight > 0 {
-            let videoAspect = videoWidth / videoHeight
-            let viewAspect = viewWidth / viewHeight
+        #if os(iOS)
+        var insets = view.safeAreaInsets
+        if insets == .zero, let cached = cachedSafeAreaInsets, cached != .zero {
+            insets = cached
+        } else if insets == .zero, let winInsets = view.window?.safeAreaInsets, winInsets != .zero {
+            insets = winInsets
+        }
+        let layout = RenderViewportLayout.compute(
+            viewBounds: viewBounds,
+            safeAreaInsets: insets,
+            drawableSize: view.drawableSize,
+            videoSize: videoSize
+        )
+        #elseif os(macOS)
+        let layout = RenderViewportLayout.compute(
+            viewBounds: viewBounds,
+            drawableSize: view.drawableSize,
+            videoSize: videoSize
+        )
+        #endif
 
-            if viewAspect > videoAspect {
-                // View is wider than video: Pillarbox
-                scale.x = videoAspect / viewAspect
-            } else {
-                // View is taller than video: Letterbox
-                scale.y = viewAspect / videoAspect
-            }
+        self.currentViewportLayout = layout
+
+        guard layout.renderRectPixels.width > 0, layout.renderRectPixels.height > 0 else {
+            return
         }
 
-        var uniforms = DisplayUniforms(scale: scale)
+        // Log layout telemetry when orientation or viewport changes
+        if lastLoggedLayout != layout {
+            lastLoggedLayout = layout
+            #if os(iOS)
+            let topPx = Int(round(layout.safeAreaInsets.top * layout.scaleY))
+            let btmPx = Int(round(layout.safeAreaInsets.bottom * layout.scaleY))
+            let lftPx = Int(round(layout.safeAreaInsets.left * layout.scaleX))
+            let rgtPx = Int(round(layout.safeAreaInsets.right * layout.scaleX))
+            let orient = (layout.drawableSize.width > layout.drawableSize.height) ? "Landscape" : "Portrait"
+            print("""
+            [Miroo Layout]
+            Screen: \(Int(layout.drawableSize.width)) × \(Int(layout.drawableSize.height))
+            Safe Area: top=\(topPx), bottom=\(btmPx), left=\(lftPx), right=\(rgtPx)
+            Usable: \(Int(layout.usableRectPixels.width)) × \(Int(layout.usableRectPixels.height))
+            Video: \(Int(layout.videoSize.width)) × \(Int(layout.videoSize.height))
+            RenderRect: x=\(Int(layout.renderRectPixels.minX)), y=\(Int(layout.renderRectPixels.minY)), w=\(Int(layout.renderRectPixels.width)), h=\(Int(layout.renderRectPixels.height))
+            Orientation: \(orient)
+            """)
+            #endif
+        }
 
-        // 4. Encode Metal render command
+        // 4. Encode Metal render command with hardware viewport and scissor clipping
         guard let commandBuffer = commandQueue.makeCommandBuffer(),
               let renderEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor) else {
             return
         }
 
         renderEncoder.setRenderPipelineState(pipelineState)
+
+        // Set hardware viewport to the exact aspect-fit render rectangle inside safe area
+        let viewport = MTLViewport(
+            originX: Double(layout.renderRectPixels.origin.x),
+            originY: Double(layout.renderRectPixels.origin.y),
+            width: Double(layout.renderRectPixels.width),
+            height: Double(layout.renderRectPixels.height),
+            znear: 0.0,
+            zfar: 1.0
+        )
+        renderEncoder.setViewport(viewport)
+
+        // Restrict rasterization to prevent any bleed into the notch/margins
+        let scissorX = max(0, Int(layout.renderRectPixels.minX))
+        let scissorY = max(0, Int(layout.renderRectPixels.minY))
+        let scissorW = min(Int(view.drawableSize.width) - scissorX, max(1, Int(layout.renderRectPixels.width)))
+        let scissorH = min(Int(view.drawableSize.height) - scissorY, max(1, Int(layout.renderRectPixels.height)))
+        renderEncoder.setScissorRect(MTLScissorRect(x: scissorX, y: scissorY, width: scissorW, height: scissorH))
+
+        // Normalized quad vertices scaled 1:1 inside the custom viewport
+        var uniforms = DisplayUniforms(scale: SIMD2<Float>(1.0, 1.0))
         renderEncoder.setVertexBytes(&uniforms, length: MemoryLayout<DisplayUniforms>.stride, index: 0)
         renderEncoder.setFragmentTexture(textureY, index: 0)
         renderEncoder.setFragmentTexture(textureUV, index: 1)
@@ -294,6 +599,8 @@ public final class MetalRenderer: NSObject, MTKViewDelegate, @unchecked Sendable
         commandBuffer.commit()
 
         // 5. Telemetry & Performance Tracking
+        guard isNewFrame else { return }
+
         let renderLatencyMs = (CACurrentMediaTime() - renderStartTime) * 1000.0
         totalFramesRendered += 1
         intervalRenderedFrames += 1
@@ -325,6 +632,21 @@ public final class MetalRenderer: NSObject, MTKViewDelegate, @unchecked Sendable
                 let totalExpected = totalFramesRendered + totalDisplayDrops
                 let dropPct = totalExpected > 0 ? (Double(totalDisplayDrops) / Double(totalExpected)) * 100.0 : 0.0
 
+                let screenPx = "\(Int(layout.drawableSize.width))×\(Int(layout.drawableSize.height))"
+                var safeAreaStr = ""
+                #if os(iOS)
+                let topPx = Int(round(layout.safeAreaInsets.top * layout.scaleY))
+                let btmPx = Int(round(layout.safeAreaInsets.bottom * layout.scaleY))
+                let lftPx = Int(round(layout.safeAreaInsets.left * layout.scaleX))
+                let rgtPx = Int(round(layout.safeAreaInsets.right * layout.scaleX))
+                safeAreaStr = "T:\(topPx) B:\(btmPx) L:\(lftPx) R:\(rgtPx)"
+                #else
+                safeAreaStr = "0,0,0,0"
+                #endif
+                let usableStr = "\(Int(layout.usableRectPixels.width))×\(Int(layout.usableRectPixels.height))"
+                let videoStr = "\(Int(layout.videoSize.width))×\(Int(layout.videoSize.height))"
+                let renderStr = "\(Int(layout.renderRectPixels.minX)),\(Int(layout.renderRectPixels.minY)) \(Int(layout.renderRectPixels.width))×\(Int(layout.renderRectPixels.height))"
+
                 let diag = FrameDiagnostics(
                     captureMs: avgCaptureMs,
                     encodeMs: avgEncodeMs,
@@ -337,7 +659,12 @@ public final class MetalRenderer: NSObject, MTKViewDelegate, @unchecked Sendable
                     jitterMs: currentJitterMs,
                     dropPercentage: dropPct,
                     queueDepth: 1,
-                    bitrateMbps: currentBitrateMbps
+                    bitrateMbps: currentBitrateMbps,
+                    screenPixelsStr: screenPx,
+                    safeAreaInsetsStr: safeAreaStr,
+                    usableViewportStr: usableStr,
+                    videoSizeStr: videoStr,
+                    renderRectStr: renderStr
                 )
 
                 onDiagnosticsUpdate?(diag)

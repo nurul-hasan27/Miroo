@@ -21,6 +21,7 @@ final class MirooMacApp: NSObject, NSApplicationDelegate {
     private static var sharedCapturer: DisplayStreamCapturer?
     private static var sharedEncoder: VideoEncoder?
     private static var sharedServer: MirooServer?
+    private static var sharedInputController: MacInputController?
 
     static func main() {
         let app = NSApplication.shared
@@ -30,6 +31,7 @@ final class MirooMacApp: NSObject, NSApplicationDelegate {
         // Set up signal handlers for graceful cleanup on Ctrl+C (SIGINT) or SIGTERM
         signal(SIGINT) { _ in
             print("\n[Miroo] Caught SIGINT (Ctrl+C). Cleaning up pipeline...")
+            MirooMacApp.sharedInputController?.releaseAllButtons()
             MirooMacApp.sharedServer?.stop()
             MirooMacApp.sharedCapturer?.stopCaptureSync()
             MirooMacApp.sharedEncoder?.invalidate()
@@ -39,6 +41,7 @@ final class MirooMacApp: NSObject, NSApplicationDelegate {
 
         signal(SIGTERM) { _ in
             print("\n[Miroo] Caught SIGTERM. Cleaning up pipeline...")
+            MirooMacApp.sharedInputController?.releaseAllButtons()
             MirooMacApp.sharedServer?.stop()
             MirooMacApp.sharedCapturer?.stopCaptureSync()
             MirooMacApp.sharedEncoder?.invalidate()
@@ -92,7 +95,20 @@ final class MirooMacApp: NSObject, NSApplicationDelegate {
             return
         }
 
-        // 4. Initialize hardware VideoToolbox encoder (Phase 3 & 6)
+        // 4. Initialize Mac input controller (Phase 6A: Touch -> Mac Cursor)
+        let inputController = MacInputController()
+        MirooMacApp.sharedInputController = inputController
+
+        server.onTouchEvent = { [weak inputController, weak manager] payload in
+            guard let inputController = inputController, let manager = manager else { return }
+            inputController.handleTouchEvent(payload, displayID: manager.displayID)
+        }
+
+        server.onClientDisconnected = { [weak inputController] in
+            inputController?.releaseAllButtons()
+        }
+
+        // 5. Initialize hardware VideoToolbox encoder (Phase 3 & 6)
         let encoder = VideoEncoder(
             width: Int32(targetWidth),
             height: Int32(targetHeight),
@@ -198,6 +214,9 @@ final class MirooMacApp: NSObject, NSApplicationDelegate {
     ) async {
         print("\n[Miroo] >>> Orientation switch requested: \(newOrientation.rawValue) <<<")
 
+        // Safety: Release all held mouse buttons during orientation reconfiguration
+        MirooMacApp.sharedInputController?.releaseAllButtons()
+
         // 1. Reconfigure virtual display mode
         let success = manager.setOrientation(newOrientation)
         guard success else {
@@ -240,6 +259,7 @@ final class MirooMacApp: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         print("[Miroo] Application terminating. Ensuring cleanup...")
+        MirooMacApp.sharedInputController?.releaseAllButtons()
         MirooMacApp.sharedServer?.stop()
         MirooMacApp.sharedCapturer?.stopCaptureSync()
         MirooMacApp.sharedEncoder?.invalidate()
