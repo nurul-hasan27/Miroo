@@ -76,24 +76,23 @@ final class MirooMacApp: NSObject, NSApplicationDelegate {
         let targetWidth = Int(VirtualDisplayManager.physicalWidth)
         let targetHeight = Int(VirtualDisplayManager.physicalHeight)
 
-        // 3. Initialize low-latency network server (Phase 4 & 6)
+        // 3. Initialize low-latency network server (Phase 4, 6 & 8A)
+        let useUDP = CommandLine.arguments.contains("--udp") || ProcessInfo.processInfo.environment["MIROO_TRANSPORT"]?.lowercased() == "udp"
+        let initialTransport: VideoTransportType = useUDP ? .udp : .tcp
+        if useUDP {
+            print("[Miroo] Starting with UDP Video Transport by default (--udp).")
+        }
+
         let server = MirooServer(
             serviceName: Host.current().localizedName ?? "Miroo Mac",
             width: targetWidth,
             height: targetHeight,
             targetFPS: 60,
             bitrate: 8_000_000,
-            maxQueueDepth: 1
+            maxQueueDepth: 1,
+            initialTransport: initialTransport
         )
         MirooMacApp.sharedServer = server
-
-        do {
-            try server.start()
-        } catch {
-            print("[Miroo] ERROR: Failed to start MirooServer: \(error.localizedDescription)")
-            NSApplication.shared.terminate(nil)
-            return
-        }
 
         // 4. Initialize Mac input controller (Phase 6A: Touch -> Mac Cursor)
         let inputController = MacInputController()
@@ -134,20 +133,33 @@ final class MirooMacApp: NSObject, NSApplicationDelegate {
             return
         }
 
-        // Connect encoder output directly to network server bounded frame queue
-        encoder.onEncodedFrame = { [weak server] data, pts, isKeyframe, encodeDurationUs in
-            server?.enqueueFrame(data: data, pts: pts, isKeyframe: isKeyframe, encodeDurationUs: encodeDurationUs)
+        // Connect encoder output directly to network server bounded frame queue with Stage timestamps
+        encoder.onEncodedFrame = { [weak server] data, pts, isKeyframe, captureNs, encStartNs, encCompNs, encodeDurationUs in
+            server?.enqueueFrame(
+                data: data,
+                pts: pts,
+                isKeyframe: isKeyframe,
+                captureTimestampNs: captureNs,
+                encodeStartNs: encStartNs,
+                encodeCompleteNs: encCompNs,
+                encodeDurationUs: encodeDurationUs
+            )
         }
 
-        // 5. Initialize ScreenCaptureKit capturer (Phase 2)
+        // 5. Initialize ScreenCaptureKit capturer (Phase 2 & Phase 7)
         let capturer = DisplayStreamCapturer()
         MirooMacApp.sharedCapturer = capturer
 
-        // Connect raw CVPixelBuffers from capturer directly into VideoToolbox encoder
+        // Connect raw CVPixelBuffers from capturer directly into VideoToolbox encoder with capture timestamp
         // If the frame queue dropped a frame, request an instantaneous keyframe to prevent visual glitches
-        capturer.onFrameCaptured = { [weak server, weak encoder] pixelBuffer, presentationTime in
+        capturer.onFrameCaptured = { [weak server, weak encoder] pixelBuffer, presentationTime, captureTimestampNs in
             let forceKey = server?.frameQueue.needsImmediateKeyframe ?? false
-            encoder?.encode(pixelBuffer: pixelBuffer, presentationTime: presentationTime, forceKeyframe: forceKey)
+            encoder?.encode(
+                pixelBuffer: pixelBuffer,
+                presentationTime: presentationTime,
+                captureTimestampNs: captureTimestampNs,
+                forceKeyframe: forceKey
+            )
         }
 
         // Handle dynamic orientation change requested by client iPhone
@@ -158,7 +170,22 @@ final class MirooMacApp: NSObject, NSApplicationDelegate {
             }
         }
 
-        // Background stdin listener for interactive terminal control ('p' = portrait, 'l' = landscape, 'r' = toggle)
+        // Handle keyframe requests from client or jitter buffer
+        server.onRequestKeyframe = { [weak encoder] in
+            encoder?.requestKeyframe()
+        }
+
+        // Start server after all callbacks and pipelines are wired
+        do {
+            try server.start()
+        } catch {
+            print("[Miroo] ERROR: Failed to start MirooServer: \(error.localizedDescription)")
+            NSApplication.shared.terminate(nil)
+            return
+        }
+
+        // Background stdin listener for interactive terminal control
+        // 'p' = portrait, 'l' = landscape, 'r' = toggle, 'u' = UDP, 't' = TCP, 'k' = keyframe, 'b' = benchmark report
         DispatchQueue.global(qos: .userInitiated).async { [weak server, weak manager, weak capturer, weak encoder] in
             let stdinHandle = FileHandle.standardInput
             while true {
@@ -175,6 +202,28 @@ final class MirooMacApp: NSObject, NSApplicationDelegate {
                     } else if line == "r" || line == "rotate" {
                         let next: MirooOrientation = (manager.currentOrientation == .portrait) ? .landscape : .portrait
                         await MirooMacApp.performOrientationSwitch(to: next, manager: manager, capturer: capturer, encoder: encoder, server: server)
+                    } else if line == "u" || line == "udp" {
+                        server.setVideoTransportType(.udp)
+                        print("[Miroo] Switched active video transport to UDP.")
+                    } else if line == "t" || line == "tcp" {
+                        server.setVideoTransportType(.tcp)
+                        print("[Miroo] Switched active video transport to TCP.")
+                    } else if line == "k" || line == "key" {
+                        encoder.requestKeyframe()
+                        print("[Miroo] Forced IDR Keyframe on next capture.")
+                    } else if line == "stat" || line == "stats" {
+                        let m = server.activeVideoTransport?.getMetrics() ?? VideoTransportMetrics()
+                        print("=== Transport Metrics (\(server.currentTransportType)) ===")
+                        print("Frames Sent: \(m.framesSent), Packets Sent: \(m.packetsSent), Bytes: \(m.bytesSent)")
+                        print("===============================================")
+                    } else if line == "b" || line == "benchmark" {
+                        let report = PipelineBenchmark.shared.generateReport()
+                        print("\n" + report.formattedSummary() + "\n")
+                        try? PipelineBenchmark.shared.exportJSON(toPath: "pipeline_benchmark_report.json")
+                        print("[Miroo] Benchmark JSON saved to pipeline_benchmark_report.json")
+                    } else if line == "reset" {
+                        PipelineBenchmark.shared.reset()
+                        print("[Miroo] Pipeline benchmark statistics reset to zero.")
                     }
                 }
             }
@@ -204,13 +253,15 @@ final class MirooMacApp: NSObject, NSApplicationDelegate {
         }
 
         print("-------------------------------------------------------")
-        print(" Miroo Full Pipeline Active:")
-        print(" Virtual Display -> SCK -> H.264 -> Bonjour + TCP Network Transport")
+        print(" Miroo Full Pipeline Active (Phase 8A Transport Abstraction):")
+        print(" Virtual Display -> SCK -> H.264 -> TCP Baseline / UDP Video Transport")
         print(" iPhone can now discover and stream from this Mac.")
-        print(" Controls: Type 'p' (portrait), 'l' (landscape), 'r' (toggle)")
+        print(" Controls: 'p'/'l'/'r' (orientation), 'u' (UDP), 't' (TCP), 'k' (keyframe), 'stat' (stats), 'b' (benchmark)")
         print(" Press Ctrl+C in this terminal to quit.")
         print("-------------------------------------------------------")
     }
+
+    private static var isSwitchingOrientation = false
 
     @MainActor
     static func performOrientationSwitch(
@@ -220,6 +271,16 @@ final class MirooMacApp: NSObject, NSApplicationDelegate {
         encoder: VideoEncoder,
         server: MirooServer
     ) async {
+        guard !isSwitchingOrientation else {
+            print("[Miroo] Orientation switch already in progress, skipping duplicate request.")
+            return
+        }
+        guard manager.currentOrientation != newOrientation else {
+            return
+        }
+        isSwitchingOrientation = true
+        defer { isSwitchingOrientation = false }
+
         print("\n[Miroo] >>> Orientation switch requested: \(newOrientation.rawValue) <<<")
 
         // Safety: Release all held mouse buttons during orientation reconfiguration

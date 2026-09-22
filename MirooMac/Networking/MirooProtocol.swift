@@ -22,6 +22,9 @@ public enum MirooMessageType: UInt8, Sendable, CustomStringConvertible {
     case touchEvent         = 10
     case scrollEvent        = 11
     case rightClick         = 12
+    case benchmarkReport    = 13
+    case keyframeRequest    = 14
+    case setTransport       = 15
 
     public var description: String {
         switch self {
@@ -37,6 +40,9 @@ public enum MirooMessageType: UInt8, Sendable, CustomStringConvertible {
         case .touchEvent:         return "TOUCH_EVENT"
         case .scrollEvent:        return "SCROLL_EVENT"
         case .rightClick:         return "RIGHT_CLICK"
+        case .benchmarkReport:    return "BENCHMARK_REPORT"
+        case .keyframeRequest:    return "KEYFRAME_REQUEST"
+        case .setTransport:       return "SET_TRANSPORT"
         }
     }
 }
@@ -254,18 +260,37 @@ public struct StreamConfigPayload: Codable, Sendable {
     public let fps: Int
     public let bitrate: Int
     public let orientation: MirooOrientation
+    public let transport: String   // "TCP" or "UDP"
+    public let udpPort: UInt16
+    public let sessionToken: UInt32
+    public let serverHost: String?
 
-    public init(codec: String = "H264", width: Int, height: Int, fps: Int = 60, bitrate: Int = 8_000_000, orientation: MirooOrientation = .portrait) {
+    public init(
+        codec: String = "H264",
+        width: Int,
+        height: Int,
+        fps: Int = 60,
+        bitrate: Int = 8_000_000,
+        orientation: MirooOrientation = .portrait,
+        transport: String = "TCP",
+        udpPort: UInt16 = 51042,
+        sessionToken: UInt32 = 0,
+        serverHost: String? = nil
+    ) {
         self.codec = codec
         self.width = width
         self.height = height
         self.fps = fps
         self.bitrate = bitrate
         self.orientation = orientation
+        self.transport = transport
+        self.udpPort = udpPort
+        self.sessionToken = sessionToken
+        self.serverHost = serverHost
     }
 
     enum CodingKeys: String, CodingKey {
-        case codec, width, height, fps, bitrate, orientation
+        case codec, width, height, fps, bitrate, orientation, transport, udpPort, sessionToken, serverHost
     }
 
     public init(from decoder: Decoder) throws {
@@ -276,6 +301,32 @@ public struct StreamConfigPayload: Codable, Sendable {
         fps = try container.decode(Int.self, forKey: .fps)
         bitrate = try container.decode(Int.self, forKey: .bitrate)
         orientation = try container.decodeIfPresent(MirooOrientation.self, forKey: .orientation) ?? (width > height ? .landscape : .portrait)
+        transport = try container.decodeIfPresent(String.self, forKey: .transport) ?? "TCP"
+        udpPort = try container.decodeIfPresent(UInt16.self, forKey: .udpPort) ?? 51042
+        sessionToken = try container.decodeIfPresent(UInt32.self, forKey: .sessionToken) ?? 0
+        serverHost = try container.decodeIfPresent(String.self, forKey: .serverHost)
+    }
+}
+
+public struct KeyframeRequestPayload: Codable, Sendable {
+    public let reason: String
+
+    public init(reason: String = "recovery") {
+        self.reason = reason
+    }
+}
+
+public struct SetTransportPayload: Codable, Sendable {
+    public let transport: String   // "TCP" or "UDP"
+    public let udpPort: UInt16
+    public let sessionToken: UInt32
+    public let serverHost: String?
+
+    public init(transport: String, udpPort: UInt16 = 51042, sessionToken: UInt32 = 0, serverHost: String? = nil) {
+        self.transport = transport
+        self.udpPort = udpPort
+        self.sessionToken = sessionToken
+        self.serverHost = serverHost
     }
 }
 
@@ -453,47 +504,101 @@ public struct RightClickPayload: Sendable, Equatable {
     }
 }
 
-// MARK: - Video Frame Timing Metadata (Phase 6 Diagnostics)
+// MARK: - Video Frame Timing Metadata (Phase 6 & 7 Diagnostics)
 
-public struct VideoFrameTiming: Sendable {
+public struct VideoFrameTiming: Sendable, Equatable {
     public static let magic: UInt32 = 0x54494D45 // 'TIME'
-    public static let headerLength: Int = 20
+    public static let legacyHeaderLength: Int = 20
+    public static let fullHeaderLength: Int = 44
 
+    public let captureTimestampNs: UInt64
+    public let encodeStartTimestampNs: UInt64
+    public let encodeCompleteTimestampNs: UInt64
+    public let networkSendTimestampNs: UInt64
     public let encodeDurationUs: UInt32
     public let macQueueDelayUs: UInt32
-    public let macSendTimestampNs: Int64
 
-    public init(encodeDurationUs: UInt32, macQueueDelayUs: UInt32, macSendTimestampNs: Int64) {
+    // Backwards compatibility accessor
+    public var macSendTimestampNs: Int64 {
+        Int64(networkSendTimestampNs)
+    }
+
+    public init(
+        captureTimestampNs: UInt64 = 0,
+        encodeStartTimestampNs: UInt64 = 0,
+        encodeCompleteTimestampNs: UInt64 = 0,
+        networkSendTimestampNs: UInt64 = 0,
+        encodeDurationUs: UInt32 = 0,
+        macQueueDelayUs: UInt32 = 0
+    ) {
+        self.captureTimestampNs = captureTimestampNs
+        self.encodeStartTimestampNs = encodeStartTimestampNs
+        self.encodeCompleteTimestampNs = encodeCompleteTimestampNs
+        self.networkSendTimestampNs = networkSendTimestampNs
         self.encodeDurationUs = encodeDurationUs
         self.macQueueDelayUs = macQueueDelayUs
-        self.macSendTimestampNs = macSendTimestampNs
+    }
+
+    public init(encodeDurationUs: UInt32, macQueueDelayUs: UInt32, macSendTimestampNs: Int64) {
+        self.captureTimestampNs = 0
+        self.encodeStartTimestampNs = 0
+        self.encodeCompleteTimestampNs = 0
+        self.networkSendTimestampNs = UInt64(max(0, macSendTimestampNs))
+        self.encodeDurationUs = encodeDurationUs
+        self.macQueueDelayUs = macQueueDelayUs
     }
 
     public func serialize() -> Data {
-        var data = Data(capacity: VideoFrameTiming.headerLength)
+        var data = Data(capacity: VideoFrameTiming.fullHeaderLength)
         var m = VideoFrameTiming.magic.bigEndian
-        var enc = encodeDurationUs.bigEndian
-        var q = macQueueDelayUs.bigEndian
-        var s = macSendTimestampNs.bigEndian
+        var cap = captureTimestampNs.bigEndian
+        var encStart = encodeStartTimestampNs.bigEndian
+        var encComp = encodeCompleteTimestampNs.bigEndian
+        var netSend = networkSendTimestampNs.bigEndian
+        var encDur = encodeDurationUs.bigEndian
+        var qDelay = macQueueDelayUs.bigEndian
+
         withUnsafeBytes(of: &m) { data.append(contentsOf: $0) }
-        withUnsafeBytes(of: &enc) { data.append(contentsOf: $0) }
-        withUnsafeBytes(of: &q) { data.append(contentsOf: $0) }
-        withUnsafeBytes(of: &s) { data.append(contentsOf: $0) }
+        withUnsafeBytes(of: &cap) { data.append(contentsOf: $0) }
+        withUnsafeBytes(of: &encStart) { data.append(contentsOf: $0) }
+        withUnsafeBytes(of: &encComp) { data.append(contentsOf: $0) }
+        withUnsafeBytes(of: &netSend) { data.append(contentsOf: $0) }
+        withUnsafeBytes(of: &encDur) { data.append(contentsOf: $0) }
+        withUnsafeBytes(of: &qDelay) { data.append(contentsOf: $0) }
         return data
     }
 
     public static func parse(from data: Data) -> (timing: VideoFrameTiming?, annexBData: Data) {
-        guard data.count >= headerLength else { return (nil, data) }
+        guard data.count >= legacyHeaderLength else { return (nil, data) }
         let magicVal = UInt32(bigEndian: data.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) })
-        if magicVal == magic {
+        guard magicVal == magic else { return (nil, data) }
+
+        if data.count >= fullHeaderLength {
+            let cap = UInt64(bigEndian: data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 4, as: UInt64.self) })
+            let encStart = UInt64(bigEndian: data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 12, as: UInt64.self) })
+            let encComp = UInt64(bigEndian: data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 20, as: UInt64.self) })
+            let netSend = UInt64(bigEndian: data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 28, as: UInt64.self) })
+            let encDur = UInt32(bigEndian: data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 36, as: UInt32.self) })
+            let qDelay = UInt32(bigEndian: data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 40, as: UInt32.self) })
+
+            let timing = VideoFrameTiming(
+                captureTimestampNs: cap,
+                encodeStartTimestampNs: encStart,
+                encodeCompleteTimestampNs: encComp,
+                networkSendTimestampNs: netSend,
+                encodeDurationUs: encDur,
+                macQueueDelayUs: qDelay
+            )
+            let annexB = data.subdata(in: fullHeaderLength..<data.count)
+            return (timing, annexB)
+        } else {
             let enc = UInt32(bigEndian: data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 4, as: UInt32.self) })
             let q = UInt32(bigEndian: data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 8, as: UInt32.self) })
             let s = Int64(bigEndian: data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 12, as: Int64.self) })
             let timing = VideoFrameTiming(encodeDurationUs: enc, macQueueDelayUs: q, macSendTimestampNs: s)
-            let annexB = data.subdata(in: headerLength..<data.count)
+            let annexB = data.subdata(in: legacyHeaderLength..<data.count)
             return (timing, annexB)
         }
-        return (nil, data)
     }
 }
 
@@ -510,10 +615,44 @@ extension MirooMessage {
         return MirooMessage(type: .displayInfo, payload: data)
     }
 
-    public static func streamConfig(codec: String = "H264", width: Int, height: Int, fps: Int = 60, bitrate: Int = 8_000_000, orientation: MirooOrientation = .portrait) -> MirooMessage {
-        let payload = StreamConfigPayload(codec: codec, width: width, height: height, fps: fps, bitrate: bitrate, orientation: orientation)
+    public static func streamConfig(
+        codec: String = "H264",
+        width: Int,
+        height: Int,
+        fps: Int = 60,
+        bitrate: Int = 8_000_000,
+        orientation: MirooOrientation = .portrait,
+        transport: String = "TCP",
+        udpPort: UInt16 = 51042,
+        sessionToken: UInt32 = 0,
+        serverHost: String? = nil
+    ) -> MirooMessage {
+        let payload = StreamConfigPayload(
+            codec: codec,
+            width: width,
+            height: height,
+            fps: fps,
+            bitrate: bitrate,
+            orientation: orientation,
+            transport: transport,
+            udpPort: udpPort,
+            sessionToken: sessionToken,
+            serverHost: serverHost
+        )
         let data = (try? JSONEncoder().encode(payload)) ?? Data()
         return MirooMessage(type: .streamConfig, payload: data)
+    }
+
+    public static func keyframeRequest(reason: String = "recovery") -> MirooMessage {
+        let payload = KeyframeRequestPayload(reason: reason)
+        let data = (try? JSONEncoder().encode(payload)) ?? Data()
+        return MirooMessage(type: .keyframeRequest, payload: data)
+    }
+
+    public static func setTransport(transport: String, udpPort: UInt16 = 51042, sessionToken: UInt32 = 0, serverHost: String? = nil) -> MirooMessage {
+        let payload = SetTransportPayload(transport: transport, udpPort: udpPort, sessionToken: sessionToken, serverHost: serverHost)
+        let data = (try? JSONEncoder().encode(payload)) ?? Data()
+        return MirooMessage(type: .setTransport, payload: data)
     }
 
     public static func displayOrientation(orientation: MirooOrientation, width: Int = 1170, height: Int = 2532) -> MirooMessage {
@@ -610,6 +749,21 @@ extension MirooMessage {
     public func decodeRightClick() -> RightClickPayload? {
         guard header.messageType == .rightClick else { return nil }
         return RightClickPayload.deserialize(from: payload)
+    }
+
+    public static func benchmarkReport(_ jsonString: String) -> MirooMessage {
+        let payload = jsonString.data(using: .utf8) ?? Data()
+        return MirooMessage(type: .benchmarkReport, payload: payload)
+    }
+
+    public func decodeKeyframeRequest() -> KeyframeRequestPayload? {
+        guard header.messageType == .keyframeRequest else { return nil }
+        return try? JSONDecoder().decode(KeyframeRequestPayload.self, from: payload)
+    }
+
+    public func decodeSetTransport() -> SetTransportPayload? {
+        guard header.messageType == .setTransport else { return nil }
+        return try? JSONDecoder().decode(SetTransportPayload.self, from: payload)
     }
 
     public func decodePayload<T: Decodable>(_ type: T.Type) -> T? {

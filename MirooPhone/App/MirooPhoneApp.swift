@@ -40,6 +40,7 @@ final class ReceiverViewModel: ObservableObject {
     @Published var currentOrientation: MirooOrientation = .portrait
     @Published var showHUD: Bool = true
     @Published var diagnostics: FrameDiagnostics = FrameDiagnostics()
+    @Published var transportType: String = "TCP"
 
     let receiver = MirooReceiver(clientName: "iPhone Secondary Display")
     let decoder = H264Decoder()
@@ -137,7 +138,8 @@ final class ReceiverViewModel: ObservableObject {
         // Stream config updates (initial or runtime orientation change)
         receiver.onStreamConfigUpdated = { [weak self] config in
             Task { @MainActor in
-                self?.streamDetails = "\(config.width)x\(config.height) (\(config.orientation.rawValue)) @ \(config.fps) FPS (\(config.codec))"
+                self?.streamDetails = "\(config.width)x\(config.height) (\(config.orientation.rawValue)) @ \(config.fps) FPS (\(config.codec)) [\(config.transport)]"
+                self?.transportType = config.transport
                 if let orientation = MirooOrientation(rawValue: config.orientation.rawValue) {
                     self?.currentOrientation = orientation
                 }
@@ -145,7 +147,7 @@ final class ReceiverViewModel: ObservableObject {
         }
 
         // 2. High-performance frame ingestion without per-frame MainActor dispatch
-        receiver.onFrameReceived = { [weak self] seq, pts, isKeyframe, data, timing, netTransitMs, jitterMs in
+        receiver.onFrameReceived = { [weak self] seq, pts, isKeyframe, data, timing, netRecvNs, netTransitMs, jitterMs in
             guard let self = self else { return }
             self.renderer?.currentJitterMs = jitterMs
             self.renderer?.currentBitrateMbps = self.receiver.metrics.snapshot().recvThroughputMbps
@@ -156,6 +158,7 @@ final class ReceiverViewModel: ObservableObject {
                 ptsNanoseconds: pts,
                 isKeyframeHint: isKeyframe,
                 timing: timing,
+                networkReceiveTimestampNs: netRecvNs,
                 networkTransitMs: netTransitMs,
                 jitterMs: jitterMs
             )
@@ -174,16 +177,30 @@ final class ReceiverViewModel: ObservableObject {
                         self.displayDetails = "\(info.name) (\(info.width)x\(info.height))"
                     }
                     if let config = self.receiver.streamConfig {
-                        self.streamDetails = "\(config.width)x\(config.height) @ \(config.fps) FPS (\(config.codec))"
+                        self.streamDetails = "\(config.width)x\(config.height) @ \(config.fps) FPS (\(config.codec)) [\(config.transport)]"
+                        self.transportType = config.transport
                     }
                 }
             }
+        }
+
+        // Request an immediate keyframe over TCP if the hardware decoder encounters a decode error or sequence gap
+        decoder.onKeyframeNeeded = { [weak self] in
+            self?.receiver.requestKeyframe(reason: "decode_error")
         }
 
         // 4. Throttled ~4 Hz diagnostic telemetry updates to avoid view invalidation storms
         renderer?.onDiagnosticsUpdate = { [weak self] diag in
             Task { @MainActor in
                 self?.diagnostics = diag
+                self?.transportType = self?.receiver.currentTransportType.rawValue ?? "TCP"
+            }
+        }
+
+        // Phase 7: Send periodic live benchmark reports back to Mac server for persistent logging
+        renderer?.onBenchmarkReportGenerated = { [weak self] report in
+            if let json = report.toJSONString() {
+                self?.receiver.sendBenchmarkReport(json)
             }
         }
     }
@@ -223,6 +240,7 @@ struct ReceiverContentView: View {
                             DiagnosticHUDView(
                                 d: viewModel.diagnostics,
                                 orientation: viewModel.currentOrientation,
+                                transport: viewModel.transportType,
                                 onDismiss: {
                                     withAnimation(.easeInOut(duration: 0.2)) {
                                         viewModel.showHUD = false
@@ -294,6 +312,13 @@ struct ReceiverContentView: View {
                                     Text(viewModel.currentOrientation.rawValue.capitalized)
                                         .foregroundColor(.secondary)
                                 }
+                                HStack {
+                                    Text("Active Transport")
+                                    Spacer()
+                                    Text(viewModel.transportType)
+                                        .bold()
+                                        .foregroundColor(viewModel.transportType == "UDP" ? .cyan : .green)
+                                }
                             }
 
                             Section("Display & Stream Config") {
@@ -363,6 +388,7 @@ struct ReceiverContentView: View {
 struct DiagnosticHUDView: View {
     let d: FrameDiagnostics
     var orientation: MirooOrientation = .portrait
+    var transport: String = "TCP"
     let onDismiss: () -> Void
     var onToggleOrientation: (() -> Void)? = nil
 
@@ -382,6 +408,16 @@ struct DiagnosticHUDView: View {
             .padding(.bottom, 2)
 
             Divider().background(Color.white.opacity(0.25))
+
+            HStack {
+                Text("Transport")
+                    .font(.system(size: 11, weight: .regular, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.85))
+                Spacer()
+                Text(transport)
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundColor(transport == "UDP" ? .cyan : .green)
+            }
 
             HStack {
                 Text("Mode")
@@ -418,14 +454,20 @@ struct DiagnosticHUDView: View {
 
             Divider().background(Color.white.opacity(0.25))
 
-            hudRow(label: "Pipeline", value: String(format: "%.1f ms", d.pipelineMs), isHighlight: true)
+            hudRow(label: "Glass-to-Render", value: String(format: "%.1f ms", d.pipelineMs), isHighlight: true)
+            if d.p50GlassToRenderMs > 0 {
+                hudRow(label: "G2R p50/95/99", value: String(format: "%.0f/%.0f/%.0f ms", d.p50GlassToRenderMs, d.p95GlassToRenderMs, d.p99GlassToRenderMs))
+                hudRow(label: "Frame Age p50/95", value: String(format: "%.0f/%.0f ms", d.p50FrameAgeMs, d.p95FrameAgeMs))
+            }
 
             Divider().background(Color.white.opacity(0.25))
 
-            hudRow(label: "FPS", value: String(format: "%.1f", d.fps))
+            hudRow(label: "FPS (Ren/Cap)", value: String(format: "%.1f / %.1f", d.fps, d.captureFps > 0 ? d.captureFps : d.fps))
             hudRow(label: "Frame Jitter", value: String(format: "%.1f ms", d.jitterMs))
-            hudRow(label: "Dropped", value: String(format: "%.1f %%", d.dropPercentage))
-            hudRow(label: "Queue Depth", value: "\(d.queueDepth) frame\(d.queueDepth == 1 ? "" : "s")")
+            hudRow(label: "Drops (Stale)", value: "\(d.staleDrops) (\(String(format: "%.1f%%", d.dropPercentage)))")
+            if d.sequenceGaps > 0 {
+                hudRow(label: "Sequence Gaps", value: "\(d.sequenceGaps)")
+            }
             hudRow(label: "Bitrate", value: String(format: "%.1f Mbps", d.bitrateMbps))
 
             if !d.renderRectStr.isEmpty {

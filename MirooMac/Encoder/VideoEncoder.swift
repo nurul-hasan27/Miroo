@@ -11,6 +11,9 @@ import CoreVideo
 import VideoToolbox
 import QuartzCore
 import os.lock
+#if canImport(MirooNetworking)
+import MirooNetworking
+#endif
 
 public enum VideoEncoderError: LocalizedError {
     case sessionCreationFailed(OSStatus)
@@ -66,8 +69,9 @@ public final class VideoEncoder {
     private var session: VTCompressionSession?
     private(set) var isHardwareAccelerated: Bool = false
 
-    /// Callback delivering each Annex-B encoded H.264 frame: (data, presentationTimeStamp, isKeyframe, encodeDurationUs)
-    public var onEncodedFrame: ((Data, CMTime, Bool, UInt32) -> Void)?
+    /// Callback delivering each Annex-B encoded H.264 frame:
+    /// (data, presentationTimeStamp, isKeyframe, captureTimestampNs, encodeStartNs, encodeCompleteNs, encodeDurationUs)
+    public var onEncodedFrame: ((Data, CMTime, Bool, UInt64, UInt64, UInt64, UInt32) -> Void)?
 
     // Statistics
     private(set) var totalFramesEncoded: UInt64 = 0
@@ -212,8 +216,22 @@ public final class VideoEncoder {
 
     // MARK: - Frame Encoding
 
-    /// Submits a raw CVPixelBuffer for hardware compression.
-    public func encode(pixelBuffer: CVPixelBuffer, presentationTime: CMTime, forceKeyframe: Bool = false) {
+    private struct EncodeTimingContext {
+        let captureTimestampNs: UInt64
+        let encodeStartTimestampNs: UInt64
+    }
+
+    private var forceNextKeyframe: Bool = false
+
+    /// Asynchronously requests that the very next frame be encoded as an IDR keyframe (e.g. for packet-loss recovery or transport switch).
+    public func requestKeyframe() {
+        os_unfair_lock_lock(&sessionLock)
+        forceNextKeyframe = true
+        os_unfair_lock_unlock(&sessionLock)
+    }
+
+    /// Submits a raw CVPixelBuffer for hardware compression with capture and encode timing.
+    public func encode(pixelBuffer: CVPixelBuffer, presentationTime: CMTime, captureTimestampNs: UInt64 = 0, forceKeyframe: Bool = false) {
         os_unfair_lock_lock(&sessionLock)
         guard let session = session else {
             os_unfair_lock_unlock(&sessionLock)
@@ -221,11 +239,29 @@ public final class VideoEncoder {
             return
         }
 
-        let timePtr = UnsafeMutablePointer<CFTimeInterval>.allocate(capacity: 1)
-        timePtr.pointee = CACurrentMediaTime()
+        let encodeStartNs = UInt64(CACurrentMediaTime() * 1_000_000_000.0)
+        let resolvedCapNs: UInt64
+        if captureTimestampNs > 0 {
+            resolvedCapNs = captureTimestampNs
+        } else if presentationTime.timescale > 0 {
+            resolvedCapNs = UInt64(Double(presentationTime.value) / Double(presentationTime.timescale) * 1_000_000_000.0)
+        } else {
+            resolvedCapNs = encodeStartNs
+        }
+
+        PipelineBenchmark.shared.recordEncodeStart()
+
+        let contextPtr = UnsafeMutablePointer<EncodeTimingContext>.allocate(capacity: 1)
+        contextPtr.pointee = EncodeTimingContext(
+            captureTimestampNs: resolvedCapNs,
+            encodeStartTimestampNs: encodeStartNs
+        )
+
+        let shouldForce = forceKeyframe || forceNextKeyframe
+        forceNextKeyframe = false
 
         var frameProps: CFDictionary? = nil
-        if forceKeyframe {
+        if shouldForce {
             let props: [CFString: Any] = [
                 kVTEncodeFrameOptionKey_ForceKeyFrame: true
             ]
@@ -239,14 +275,14 @@ public final class VideoEncoder {
             presentationTimeStamp: presentationTime,
             duration: frameDuration,
             frameProperties: frameProps,
-            sourceFrameRefcon: UnsafeMutableRawPointer(timePtr),
+            sourceFrameRefcon: UnsafeMutableRawPointer(contextPtr),
             infoFlagsOut: nil
         )
         os_unfair_lock_unlock(&sessionLock)
 
         if status != noErr {
             totalFailures += 1
-            timePtr.deallocate()
+            contextPtr.deallocate()
             print("[Miroo] Warning: EncodeFrame failed with status: \(status)")
         }
     }
@@ -301,15 +337,22 @@ public final class VideoEncoder {
         sampleBuffer: CMSampleBuffer?,
         sourceFrameRefCon: UnsafeMutableRawPointer?
     ) {
+        let encodeCompleteNs = UInt64(CACurrentMediaTime() * 1_000_000_000.0)
+        var captureNs: UInt64 = 0
+        var encodeStartNs: UInt64 = 0
         var frameLatencyMs: Double = 0.0
         var encodeDurationUs: UInt32 = 0
         if let refCon = sourceFrameRefCon {
-            let startPtr = refCon.assumingMemoryBound(to: CFTimeInterval.self)
-            let elapsed = CACurrentMediaTime() - startPtr.pointee
-            frameLatencyMs = elapsed * 1000.0
-            encodeDurationUs = UInt32(min(Double(UInt32.max), elapsed * 1_000_000.0))
-            startPtr.deallocate()
+            let ctxPtr = refCon.assumingMemoryBound(to: EncodeTimingContext.self)
+            captureNs = ctxPtr.pointee.captureTimestampNs
+            encodeStartNs = ctxPtr.pointee.encodeStartTimestampNs
+            let elapsedNs = max(0, encodeCompleteNs - encodeStartNs)
+            frameLatencyMs = Double(elapsedNs) / 1_000_000.0
+            encodeDurationUs = UInt32(min(UInt64(UInt32.max), elapsedNs / 1000))
+            ctxPtr.deallocate()
         }
+
+        PipelineBenchmark.shared.recordEncodeComplete(durationUs: encodeDurationUs)
 
         guard status == noErr, let sampleBuffer = sampleBuffer else {
             totalFailures += 1
@@ -380,8 +423,8 @@ public final class VideoEncoder {
             print("[Miroo] Stats: bitrate=\(String(format: "%.2f", currentBitrateMbps)) Mbps, avgFrame=\(String(format: "%.1f", avgFrameSizeKB)) KB, keyframes=\(totalKeyframes), failures=\(totalFailures)")
         }
 
-        // 6. Deliver to subscriber
-        onEncodedFrame?(annexBData, pts, isKeyframe, encodeDurationUs)
+        // 6. Deliver to subscriber with full pipeline timestamps
+        onEncodedFrame?(annexBData, pts, isKeyframe, captureNs, encodeStartNs, encodeCompleteNs, encodeDurationUs)
     }
 
     // MARK: - Annex-B Conversion

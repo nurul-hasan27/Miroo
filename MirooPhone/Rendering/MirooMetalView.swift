@@ -48,13 +48,15 @@ public final class MirooMTKView: MTKView {
     public override func safeAreaInsetsDidChange() {
         super.safeAreaInsetsDidChange()
         resetGestureState()
-        onLayoutChange?(bounds, safeAreaInsets)
+        let effectiveInsets = window?.safeAreaInsets ?? safeAreaInsets
+        onLayoutChange?(bounds, effectiveInsets)
         self.draw()
     }
 
     public override func layoutSubviews() {
         super.layoutSubviews()
-        onLayoutChange?(bounds, safeAreaInsets)
+        let effectiveInsets = window?.safeAreaInsets ?? safeAreaInsets
+        onLayoutChange?(bounds, effectiveInsets)
         self.draw()
     }
 
@@ -322,7 +324,8 @@ public struct MirooMetalView: UIViewRepresentable {
         uiView.onTouchEvent = onTouchEvent
         uiView.onScrollEvent = onScrollEvent
         uiView.onRightClick = onRightClick
-        renderer.updateViewLayout(bounds: uiView.bounds, safeAreaInsets: uiView.safeAreaInsets)
+        let effectiveInsets = uiView.window?.safeAreaInsets ?? uiView.safeAreaInsets
+        renderer.updateViewLayout(bounds: uiView.bounds, safeAreaInsets: effectiveInsets)
     }
 }
 
