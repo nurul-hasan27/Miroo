@@ -220,7 +220,7 @@ struct ReceiverContentView: View {
                 if viewModel.isStreaming, let renderer = viewModel.renderer {
                     // Live Metal display with low-latency HUD overlay
                     ZStack(alignment: .topLeading) {
-                        Color.black.ignoresSafeArea()
+                        Color.black
 
                         MirooMetalView(
                             renderer: renderer,
@@ -234,7 +234,7 @@ struct ReceiverContentView: View {
                                 viewModel.sendRightClick(payload)
                             }
                         )
-                        .ignoresSafeArea()
+                        .frame(width: geo.size.width, height: geo.size.height)
 
                         if viewModel.showHUD {
                             DiagnosticHUDView(
@@ -380,6 +380,7 @@ struct ReceiverContentView: View {
                 viewModel.updateOrientationIfNeeded(newOrientation)
             }
         }
+        .ignoresSafeArea()
     }
 }
 
