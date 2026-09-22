@@ -23,14 +23,14 @@ let receiver = MirooReceiver(clientName: "Miroo Mac Player")
 let decoder = H264Decoder()
 let renderer = MetalRenderer()
 
-// Wire pipeline: Network -> VideoToolbox Hardware Decoder -> Metal GPU Renderer
-receiver.onFrameReceived = { seq, pts, isKeyframe, data, timing, netTransitMs, jitterMs in
+receiver.onFrameReceived = { seq, pts, isKeyframe, data, timing, netRecvNs, netTransitMs, jitterMs in
     decoder.decode(
         annexBData: data,
-        sequence: seq,
-        ptsNanoseconds: pts,
+        sequence: UInt64(seq),
+        ptsNanoseconds: Int64(pts),
         isKeyframeHint: isKeyframe,
         timing: timing,
+        networkReceiveTimestampNs: netRecvNs,
         networkTransitMs: netTransitMs,
         jitterMs: jitterMs
     )

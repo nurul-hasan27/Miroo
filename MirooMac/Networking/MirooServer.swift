@@ -150,11 +150,17 @@ public final class MirooServer: @unchecked Sendable {
     private func handleNewConnection(_ newNWConn: NWConnection) {
         print("[Miroo Server] Incoming connection detected from \(newNWConn.endpoint)...")
 
-        // If an existing client was connected, gracefully disconnect it to allow immediate reconnection
+        // If an existing client is connecting, connected, or streaming, reject duplicate Happy Eyeballs probe
         if let existing = activeConnection {
-            print("[Miroo Server] Disconnecting previous connection in favor of new client...")
-            existing.disconnect()
-            activeConnection = nil
+            if existing.state == .streaming || existing.state == .connected || existing.state == .connecting {
+                print("[Miroo Server] Active connection already in progress (\(existing.state)); rejecting redundant connection from \(newNWConn.endpoint)")
+                newNWConn.cancel()
+                return
+            } else {
+                print("[Miroo Server] Disconnecting stale previous connection in favor of new client...")
+                existing.disconnect()
+                activeConnection = nil
+            }
         }
 
         frameQueue.clear()
@@ -259,6 +265,13 @@ public final class MirooServer: @unchecked Sendable {
                 onRightClick?(payload)
             }
 
+        case .benchmarkReport:
+            if let jsonString = String(data: message.payload, encoding: .utf8),
+               let report = PipelineBenchmarkReport.fromJSON(jsonString) {
+                print("\n[Miroo Server] Received Live Benchmark Report from Device:\n" + report.formattedSummary() + "\n")
+                try? PipelineBenchmark.shared.exportJSON(toPath: "pipeline_benchmark_report.json", report: report)
+            }
+
         default:
             break
         }
@@ -283,8 +296,16 @@ public final class MirooServer: @unchecked Sendable {
 
     // MARK: - Frame Ingestion & Backpressure Send Pump
 
-    /// Enqueues an encoded H.264 Annex-B frame from VideoToolbox.
-    public func enqueueFrame(data: Data, pts: CMTime, isKeyframe: Bool, encodeDurationUs: UInt32 = 0) {
+    /// Enqueues an encoded H.264 Annex-B frame from VideoToolbox with full pipeline timing.
+    public func enqueueFrame(
+        data: Data,
+        pts: CMTime,
+        isKeyframe: Bool,
+        captureTimestampNs: UInt64 = 0,
+        encodeStartNs: UInt64 = 0,
+        encodeCompleteNs: UInt64 = 0,
+        encodeDurationUs: UInt32 = 0
+    ) {
         metrics.recordFrameEncoded()
         sequenceCounter += 1
 
@@ -292,20 +313,26 @@ public final class MirooServer: @unchecked Sendable {
         if pts.timescale > 0 {
             ptsNanoseconds = Int64(Double(pts.value) / Double(pts.timescale) * 1_000_000_000.0)
         } else {
-            ptsNanoseconds = 0
+            ptsNanoseconds = Int64(captureTimestampNs)
         }
+
+        let resolvedCapNs = (captureTimestampNs > 0) ? captureTimestampNs : UInt64(max(0, ptsNanoseconds))
 
         let queuedFrame = QueuedFrame(
             sequence: sequenceCounter,
             pts: ptsNanoseconds,
             isKeyframe: isKeyframe,
             data: data,
-            encodeDurationUs: encodeDurationUs
+            encodeDurationUs: encodeDurationUs,
+            captureTimestampNs: resolvedCapNs,
+            encodeStartTimestampNs: encodeStartNs,
+            encodeCompleteTimestampNs: encodeCompleteNs
         )
 
         let accepted = frameQueue.enqueue(queuedFrame)
         if !accepted {
             metrics.recordFrameDropped()
+            PipelineBenchmark.shared.recordServerDrop(isKeyframe: isKeyframe)
         }
 
         queue.async { [weak self] in
@@ -322,14 +349,17 @@ public final class MirooServer: @unchecked Sendable {
 
         isSending = true
 
-        let macSendTimestampNs = Int64(CACurrentMediaTime() * 1_000_000_000.0)
+        let macSendTimestampNs = UInt64(CACurrentMediaTime() * 1_000_000_000.0)
         let queueDelaySeconds = max(0.0, CACurrentMediaTime() - frame.timestamp)
         let queueDelayUs = UInt32(min(Double(UInt32.max), queueDelaySeconds * 1_000_000.0))
 
         let timing = VideoFrameTiming(
+            captureTimestampNs: frame.captureTimestampNs,
+            encodeStartTimestampNs: frame.encodeStartTimestampNs,
+            encodeCompleteTimestampNs: frame.encodeCompleteTimestampNs,
+            networkSendTimestampNs: macSendTimestampNs,
             encodeDurationUs: frame.encodeDurationUs,
-            macQueueDelayUs: queueDelayUs,
-            macSendTimestampNs: macSendTimestampNs
+            macQueueDelayUs: queueDelayUs
         )
 
         let msg = MirooMessage.videoFrame(
@@ -348,6 +378,7 @@ public final class MirooServer: @unchecked Sendable {
 
                 if error == nil {
                     self.metrics.recordFrameSent(bytes: serialized.count)
+                    PipelineBenchmark.shared.recordFrameTransmitted(sequence: frame.sequence)
                     // Immediately check if another frame is waiting
                     self.pumpQueue()
                 }

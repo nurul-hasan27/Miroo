@@ -18,14 +18,29 @@ public struct QueuedFrame: Sendable {
     public let data: Data
     public let encodeDurationUs: UInt32
     public let timestamp: CFTimeInterval
+    public let captureTimestampNs: UInt64
+    public let encodeStartTimestampNs: UInt64
+    public let encodeCompleteTimestampNs: UInt64
 
-    public init(sequence: UInt64, pts: Int64, isKeyframe: Bool, data: Data, encodeDurationUs: UInt32 = 0) {
+    public init(
+        sequence: UInt64,
+        pts: Int64,
+        isKeyframe: Bool,
+        data: Data,
+        encodeDurationUs: UInt32 = 0,
+        captureTimestampNs: UInt64 = 0,
+        encodeStartTimestampNs: UInt64 = 0,
+        encodeCompleteTimestampNs: UInt64 = 0
+    ) {
         self.sequence = sequence
         self.pts = pts
         self.isKeyframe = isKeyframe
         self.data = data
         self.encodeDurationUs = encodeDurationUs
         self.timestamp = CACurrentMediaTime()
+        self.captureTimestampNs = captureTimestampNs
+        self.encodeStartTimestampNs = encodeStartTimestampNs
+        self.encodeCompleteTimestampNs = encodeCompleteTimestampNs
     }
 }
 
