@@ -39,7 +39,8 @@ let package = Package(
                 "H264Decoder.swift",
                 "MetalRenderer.swift",
                 "MirooMetalView.swift",
-                "MacInputController.swift"
+                "MacInputController.swift",
+                "USBMuxClient.swift"
             ]
         ),
         .executableTarget(
