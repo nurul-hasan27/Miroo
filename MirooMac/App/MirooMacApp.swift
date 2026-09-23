@@ -175,13 +175,30 @@ final class MirooMacApp: NSObject, NSApplicationDelegate {
             encoder?.requestKeyframe()
         }
 
-        // Start server after all callbacks and pipelines are wired
-        do {
-            try server.start()
-        } catch {
-            print("[Miroo] ERROR: Failed to start MirooServer: \(error.localizedDescription)")
-            NSApplication.shared.terminate(nil)
-            return
+        // 6. Start ScreenCaptureKit Capture, then start MirooServer
+        Task {
+            do {
+                try await capturer.startCapture(
+                    displayID: displayID,
+                    displayName: displayName,
+                    targetWidth: targetWidth,
+                    targetHeight: targetHeight,
+                    targetFPS: 60
+                )
+                
+                // Start server after capture stream is confirmed active
+                try server.start()
+            } catch {
+                print("[Miroo] Initialization error: \(error.localizedDescription)")
+                if let capturerErr = error as? CapturerError, case .permissionDenied = capturerErr {
+                    print("----------------------------------------------------------------------")
+                    print(" ACTION REQUIRED: Screen Recording Permission Needed")
+                    print(" 1. Open System Settings -> Privacy & Security -> Screen Recording")
+                    print(" 2. Enable permission for 'Terminal' (or 'MirooMac')")
+                    print(" 3. Re-run MirooMac")
+                    print("----------------------------------------------------------------------")
+                }
+            }
         }
 
         // Background stdin listener for interactive terminal control
@@ -225,29 +242,6 @@ final class MirooMacApp: NSObject, NSApplicationDelegate {
                         PipelineBenchmark.shared.reset()
                         print("[Miroo] Pipeline benchmark statistics reset to zero.")
                     }
-                }
-            }
-        }
-
-        // 6. Start ScreenCaptureKit Capture
-        Task {
-            do {
-                try await capturer.startCapture(
-                    displayID: displayID,
-                    displayName: displayName,
-                    targetWidth: targetWidth,
-                    targetHeight: targetHeight,
-                    targetFPS: 60
-                )
-            } catch {
-                print("[Miroo] Capture initialization error: \(error.localizedDescription)")
-                if let capturerErr = error as? CapturerError, case .permissionDenied = capturerErr {
-                    print("----------------------------------------------------------------------")
-                    print(" ACTION REQUIRED: Screen Recording Permission Needed")
-                    print(" 1. Open System Settings -> Privacy & Security -> Screen Recording")
-                    print(" 2. Enable permission for 'Terminal' (or 'MirooMac')")
-                    print(" 3. Re-run MirooMac")
-                    print("----------------------------------------------------------------------")
                 }
             }
         }

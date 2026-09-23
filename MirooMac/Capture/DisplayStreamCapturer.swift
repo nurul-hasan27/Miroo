@@ -136,10 +136,9 @@ public final class DisplayStreamCapturer: NSObject, SCStreamOutput, SCStreamDele
         config.width = targetWidth
         config.height = targetHeight
         config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(targetFPS))
-        config.pixelFormat = kCVPixelFormatType_32BGRA
-        config.capturesAudio = false
+        config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange // Native hardware encoder format (NV12): eliminates CPU/GPU color conversion
         config.showsCursor = true
-        config.queueDepth = 2 // Minimal buffering for real-time responsiveness
+        config.queueDepth = 2 // Minimal buffering for real-time responsiveness without buffer starvation
 
         // 5. Create and start the stream
         let stream = SCStream(filter: filter, configuration: config, delegate: self)
@@ -177,7 +176,7 @@ public final class DisplayStreamCapturer: NSObject, SCStreamOutput, SCStreamDele
         config.width = targetWidth
         config.height = targetHeight
         config.minimumFrameInterval = CMTime(value: 1, timescale: 60)
-        config.pixelFormat = kCVPixelFormatType_32BGRA
+        config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         config.capturesAudio = false
         config.showsCursor = true
         config.queueDepth = 2
