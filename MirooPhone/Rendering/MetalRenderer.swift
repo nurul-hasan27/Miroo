@@ -18,6 +18,30 @@ import QuartzCore
 import UIKit
 #elseif os(macOS)
 import AppKit
+
+public struct UIEdgeInsets: Equatable, Sendable {
+    public var top: CGFloat
+    public var left: CGFloat
+    public var bottom: CGFloat
+    public var right: CGFloat
+
+    public static let zero = UIEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
+
+    public init(top: CGFloat = 0, left: CGFloat = 0, bottom: CGFloat = 0, right: CGFloat = 0) {
+        self.top = top
+        self.left = left
+        self.bottom = bottom
+        self.right = right
+    }
+}
+
+public enum UIInterfaceOrientation: Int, Sendable {
+    case unknown = 0
+    case portrait = 1
+    case portraitUpsideDown = 2
+    case landscapeLeft = 4   // Home button on left -> notch physically on RIGHT
+    case landscapeRight = 3  // Home button on right -> notch physically on LEFT
+}
 #endif
 
 // MARK: - Viewport & Layout Geometry
@@ -28,10 +52,8 @@ public struct RenderViewportLayout: Equatable, Sendable {
     /// Full view bounds in logical points
     public let viewBounds: CGRect
 
-    #if os(iOS)
-    /// Physical safe area insets in logical points
+    /// Physical hardware obstruction insets in logical points (excludes software-only insets like home indicator)
     public let safeAreaInsets: UIEdgeInsets
-    #endif
 
     /// Usable viewport rectangle in logical points (bounds minus safe-area insets)
     public let usableRectPoints: CGRect
@@ -55,10 +77,9 @@ public struct RenderViewportLayout: Equatable, Sendable {
     public let scaleX: CGFloat
     public let scaleY: CGFloat
 
-    #if os(iOS)
     public init(
         viewBounds: CGRect,
-        safeAreaInsets: UIEdgeInsets,
+        safeAreaInsets: UIEdgeInsets = .zero,
         usableRectPoints: CGRect,
         usableRectPixels: CGRect,
         videoSize: CGSize,
@@ -79,7 +100,8 @@ public struct RenderViewportLayout: Equatable, Sendable {
         self.scaleX = scaleX
         self.scaleY = scaleY
     }
-    #else
+
+    #if os(macOS)
     public init(
         viewBounds: CGRect,
         usableRectPoints: CGRect,
@@ -91,21 +113,25 @@ public struct RenderViewportLayout: Equatable, Sendable {
         scaleX: CGFloat,
         scaleY: CGFloat
     ) {
-        self.viewBounds = viewBounds
-        self.usableRectPoints = usableRectPoints
-        self.usableRectPixels = usableRectPixels
-        self.videoSize = videoSize
-        self.contentRectPoints = contentRectPoints
-        self.renderRectPixels = renderRectPixels
-        self.drawableSize = drawableSize
-        self.scaleX = scaleX
-        self.scaleY = scaleY
+        self.init(
+            viewBounds: viewBounds,
+            safeAreaInsets: .zero,
+            usableRectPoints: usableRectPoints,
+            usableRectPixels: usableRectPixels,
+            videoSize: videoSize,
+            contentRectPoints: contentRectPoints,
+            renderRectPixels: renderRectPixels,
+            drawableSize: drawableSize,
+            scaleX: scaleX,
+            scaleY: scaleY
+        )
     }
     #endif
 
-    #if os(iOS)
-    /// Authoritative safe-area and Aspect-Fit calculation for iOS devices.
-    /// Excludes notch, home indicator, and rounded corners according to UIKit insets.
+    /// Authoritative safe-area and Aspect-Fit calculation for true edge-to-edge display.
+    /// Excludes ONLY actual physical hardware obstructions (e.g. notch, Dynamic Island).
+    /// Software safe-area regions (e.g. home indicator) are NOT treated as hardware obstructions,
+    /// allowing video to extend all the way to the physical screen edges.
     public static func compute(
         viewBounds: CGRect,
         safeAreaInsets: UIEdgeInsets,
@@ -116,35 +142,75 @@ public struct RenderViewportLayout: Equatable, Sendable {
         let scaleX: CGFloat = viewBounds.width > 0 ? (drawableSize.width / viewBounds.width) : 1.0
         let scaleY: CGFloat = viewBounds.height > 0 ? (drawableSize.height / viewBounds.height) : 1.0
 
-        var effectiveInsets = safeAreaInsets
-        if viewBounds.width > viewBounds.height {
-            // In landscape, the physical notch / Dynamic Island is strictly on ONE side.
-            // Symmetrical horizontal insets reported by UIKit reflect generic document centering.
-            // For a video display, only the actual notch side must be excluded; the non-notch
-            // edge is kept at 0 to maximize usable screen real estate with zero cropping.
-            let notchInset = max(safeAreaInsets.left, safeAreaInsets.right)
-            if interfaceOrientation == .landscapeLeft {
-                // UIInterfaceOrientationLandscapeLeft: Notch is physically on the right
-                effectiveInsets.left = 0
-                effectiveInsets.right = notchInset
-            } else if interfaceOrientation == .landscapeRight {
-                // UIInterfaceOrientationLandscapeRight: Notch is physically on the left
-                effectiveInsets.left = notchInset
+        var effectiveInsets = UIEdgeInsets.zero
+
+        let isLandscape = viewBounds.width > viewBounds.height
+
+        if isLandscape {
+            // In landscape:
+            // Top and bottom edges NEVER have a physical hardware cutout on any iOS device.
+            // Any software safe-area insets at top/bottom (e.g. home indicator) are set to 0.
+            effectiveInsets.top = 0
+            effectiveInsets.bottom = 0
+
+            // The physical cutout (notch or Dynamic Island) is strictly on ONE side (left or right).
+            // The opposite edge (with home indicator bar or plain edge) has NO hardware cutout.
+            // Symmetrical horizontal margins must NOT be applied.
+            if safeAreaInsets.left > safeAreaInsets.right {
+                // Notch is definitively on the left side
+                effectiveInsets.left = safeAreaInsets.left
                 effectiveInsets.right = 0
-            } else if safeAreaInsets.left > 0 && safeAreaInsets.right > 0 {
-                let devOrient = UIDevice.current.orientation
-                if devOrient == .landscapeLeft {
-                    effectiveInsets.left = notchInset
-                    effectiveInsets.right = 0
-                } else if devOrient == .landscapeRight {
+            } else if safeAreaInsets.right > safeAreaInsets.left {
+                // Notch is definitively on the right side
+                effectiveInsets.left = 0
+                effectiveInsets.right = safeAreaInsets.right
+            } else if safeAreaInsets.left > 0 {
+                // Symmetrical horizontal insets reported by UIKit (e.g. 44/44 or 48/48).
+                // Disambiguate using interface orientation or device orientation.
+                let notchInset = safeAreaInsets.left
+                var notchOnRight = (interfaceOrientation == .landscapeLeft)
+                var notchOnLeft = (interfaceOrientation == .landscapeRight)
+                #if os(iOS)
+                if !notchOnRight && !notchOnLeft {
+                    let devOrient = UIDevice.current.orientation
+                    if devOrient == .landscapeLeft {
+                        notchOnLeft = true
+                    } else if devOrient == .landscapeRight {
+                        notchOnRight = true
+                    }
+                }
+                #endif
+
+                if notchOnRight {
+                    // UIInterfaceOrientationLandscapeLeft: Home button on left -> notch physically on RIGHT
                     effectiveInsets.left = 0
                     effectiveInsets.right = notchInset
+                } else if notchOnLeft {
+                    // UIInterfaceOrientationLandscapeRight: Home button on right -> notch physically on LEFT
+                    effectiveInsets.left = notchInset
+                    effectiveInsets.right = 0
                 } else {
-                    // Standard landscape default: notch on left
+                    // Default fallback for landscape when orientation is completely unknown: notch on left
                     effectiveInsets.left = notchInset
                     effectiveInsets.right = 0
                 }
+            } else {
+                // No cutout on left or right (e.g. iPad, iPhone SE, or Mac)
+                effectiveInsets.left = 0
+                effectiveInsets.right = 0
             }
+        } else {
+            // In portrait (viewBounds.width <= viewBounds.height):
+            // Hardware cutout (notch / Dynamic Island) is strictly at the TOP.
+            effectiveInsets.top = safeAreaInsets.top
+
+            // The bottom inset represents the software home indicator.
+            // It is NOT a hardware obstruction. The video MUST extend to the physical bottom edge.
+            effectiveInsets.bottom = 0
+
+            // Left and right edges have no cutout in portrait.
+            effectiveInsets.left = 0
+            effectiveInsets.right = 0
         }
 
         let usableX = effectiveInsets.left
@@ -195,49 +261,19 @@ public struct RenderViewportLayout: Equatable, Sendable {
             scaleY: scaleY
         )
     }
-    #elseif os(macOS)
+
+    #if os(macOS)
     public static func compute(
         viewBounds: CGRect,
         drawableSize: CGSize,
         videoSize: CGSize
     ) -> RenderViewportLayout {
-        let scaleX: CGFloat = viewBounds.width > 0 ? (drawableSize.width / viewBounds.width) : 1.0
-        let scaleY: CGFloat = viewBounds.height > 0 ? (drawableSize.height / viewBounds.height) : 1.0
-        let usableRectPoints = viewBounds
-        let usableRectPixels = CGRect(origin: .zero, size: drawableSize)
-
-        var renderRectPixels = CGRect.zero
-        var contentRectPoints = CGRect.zero
-
-        if videoSize.width > 0 && videoSize.height > 0 && usableRectPixels.width > 0 && usableRectPixels.height > 0 {
-            let fitScale = min(
-                usableRectPixels.width / videoSize.width,
-                usableRectPixels.height / videoSize.height
-            )
-            let renderWidth = videoSize.width * fitScale
-            let renderHeight = videoSize.height * fitScale
-            let renderX = (usableRectPixels.width - renderWidth) / 2.0
-            let renderY = (usableRectPixels.height - renderHeight) / 2.0
-            renderRectPixels = CGRect(x: renderX, y: renderY, width: renderWidth, height: renderHeight)
-
-            contentRectPoints = CGRect(
-                x: renderX / scaleX,
-                y: renderY / scaleY,
-                width: renderWidth / scaleX,
-                height: renderHeight / scaleY
-            )
-        }
-
-        return RenderViewportLayout(
+        return compute(
             viewBounds: viewBounds,
-            usableRectPoints: usableRectPoints,
-            usableRectPixels: usableRectPixels,
-            videoSize: videoSize,
-            contentRectPoints: contentRectPoints,
-            renderRectPixels: renderRectPixels,
+            safeAreaInsets: .zero,
             drawableSize: drawableSize,
-            scaleX: scaleX,
-            scaleY: scaleY
+            videoSize: videoSize,
+            interfaceOrientation: .unknown
         )
     }
     #endif
@@ -327,13 +363,10 @@ public final class MetalRenderer: NSObject, MTKViewDelegate, @unchecked Sendable
     // Authoritative Viewport & Safe-Area Layout
     public private(set) var currentViewportLayout: RenderViewportLayout?
     private var cachedViewBounds: CGRect = .zero
-    #if os(iOS)
     private var cachedSafeAreaInsets: UIEdgeInsets?
-    #endif
     private var lastLoggedLayout: RenderViewportLayout?
 
-    #if os(iOS)
-    public func updateViewLayout(bounds: CGRect, safeAreaInsets: UIEdgeInsets) {
+    public func updateViewLayout(bounds: CGRect, safeAreaInsets: UIEdgeInsets = .zero) {
         let wasLandscape = cachedViewBounds.width > cachedViewBounds.height
         let isLandscape = bounds.width > bounds.height
         self.cachedViewBounds = bounds
@@ -343,11 +376,6 @@ public final class MetalRenderer: NSObject, MTKViewDelegate, @unchecked Sendable
             self.cachedSafeAreaInsets = nil
         }
     }
-    #elseif os(macOS)
-    public func updateViewLayout(bounds: CGRect) {
-        self.cachedViewBounds = bounds
-    }
-    #endif
 
     public init?(device: MTLDevice? = MTLCreateSystemDefaultDevice()) {
         guard let device = device,
