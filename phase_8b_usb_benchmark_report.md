@@ -4,11 +4,6 @@
 
 Phase 8B introduces a **high-performance, zero-Bonjour-delay native USB transport** for Miroo. By communicating directly through Apple's native `usbmuxd` (USB Multiplexor Daemon) UNIX domain socket (`/var/run/usbmuxd`) on macOS and a local loopback port on iOS, Miroo establishes a high-throughput, jitter-free streaming tunnel between Mac and iPhone without requiring any network configuration, pairing dialogs, or Bonjour discovery wait times.
 
-This implementation is **100% App Store and Apple Developer compliant**:
-* **macOS**: Communicates over the standard, unprivileged UNIX domain socket `/var/run/usbmuxd`.
-* **iOS**: Listens on unprivileged localhost socket `127.0.0.1:51065` inside the standard iOS App Sandbox.
-* **No Private APIs**: Uses standard POSIX sockets and Network.framework without private symbols or entitlements.
-
 End-to-end performance was validated on **physical Apple Silicon (MacBook Air M1) and physical iOS hardware (iPhone 11)** over a physical Lightning-to-USB cable.
 
 ```text
@@ -82,7 +77,36 @@ The iPhone Diagnostic HUD was updated to provide unambiguous, real-time transpor
 
 ---
 
-## 4. Head-to-Head Transport Benchmark
+## 4. Apple Platform Architecture, APIs & Distribution Analysis
+
+### 4.1 Public vs. Private APIs
+* **macOS Host Engine (`MirooMac`)**:
+  - Uses strictly public APIs: `Network.framework` (`NWConnection`), `Foundation` (`PropertyListSerialization`), and standard Swift standard library.
+  - Zero private Apple frameworks linked (e.g. no `MobileDevice.framework`, no private symbols, no `dlopen` of private libraries).
+  - Interacts with `/var/run/usbmuxd` via standard POSIX UNIX domain socket connection.
+* **iOS Receiver (`MirooPhone`)**:
+  - Uses strictly public APIs: `Network.framework` (`NWListener`, `NWConnection`) listening on loopback port `51065`.
+  - Conforms fully to standard iOS App Sandbox capabilities. Localhost socket listening requires no special entitlements.
+
+### 4.2 `/var/run/usbmuxd` Availability
+* `/var/run/usbmuxd` is a launchd-managed system UNIX domain socket provided by macOS (`/System/Library/LaunchDaemons/com.apple.usbmuxd.plist`).
+* It is active and present by default across all standard macOS configurations (macOS 10.x through macOS 15.x Sequoia). Any Mac that supports iOS device connectivity (via Finder, Xcode, or iTunes) runs `usbmuxd`.
+
+### 4.3 Distribution Suitability & App Store Compliance Nuance
+* **Developer Builds / Direct Distribution / Notarized macOS Apps (Outside Mac App Store)**:
+  - **100% SUITABLE AND TESTED**: Direct distribution builds signed with Apple Developer ID and notarized by Apple can freely connect to `/var/run/usbmuxd` as an unprivileged UNIX socket.
+  - No kernel extensions, privileged helper daemons, or root permissions are needed.
+* **iOS App Store**:
+  - The iOS app runs fully sandboxed and binds to a localhost port using standard `NWListener`. This conforms to iOS App Store guidelines for networking and companion utilities.
+* **Mac App Store (MAS) Sandbox Restrictions**:
+  - **Distribution Limitation**: macOS apps distributed through the **Mac App Store** must enable the macOS App Sandbox (`com.apple.security.app-sandbox = true`).
+  - Under the standard macOS sandbox profile, outbound UNIX domain socket connections outside the container directory (such as `/var/run/usbmuxd`) are blocked by the OS kernel sandbox.
+  - While temporary exception entitlements (`com.apple.security.temporary-exception.files.absolute-path.read-write = ["/var/run/usbmuxd"]`) exist, Apple rarely approves them during MAS review for general utilities.
+  - **Conclusion**: The usbmuxd approach is ideal for direct distribution (DMG, Developer ID signed, notarized), open-source releases, and internal/developer workflows. For a future pure Mac App Store release, Miroo can fall back seamlessly to its existing zero-config Wi-Fi (UDP/TCP via Bonjour) or implement a decoupled helper.
+
+---
+
+## 5. Head-to-Head Transport Benchmark
 
 The following measurements were collected on identical physical hardware (MacBook Air M1 + iPhone 11) using Miroo's microsecond-precision `PipelineBenchmark` across 1,000 continuous video frames per transport:
 
@@ -108,7 +132,7 @@ The following measurements were collected on identical physical hardware (MacBoo
 
 ---
 
-## 5. Verification Test Suite
+## 6. Verification Test Suite
 
 All 50 regression and unit tests passed cleanly across all project phases:
 
@@ -128,7 +152,7 @@ All 50 regression and unit tests passed cleanly across all project phases:
 
 ---
 
-## 6. Conclusion & Recommendations
+## 7. Conclusion & Recommendations
 
 The USB transport represents a massive leap forward in Miroo's responsiveness, predictability, and user experience:
 1. **Immediate Connection**: Zero Bonjour lookup wait times — plugging in the cable connects instantly.
