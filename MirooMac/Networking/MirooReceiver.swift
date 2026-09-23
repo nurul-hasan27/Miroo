@@ -48,6 +48,17 @@ public final class MirooReceiver: @unchecked Sendable {
     private var telemetryTimer: DispatchSourceTimer?
     private var pingTimer: DispatchSourceTimer?
     private var isAutoReconnectEnabled = true
+    private var isUserInitiatedStop = false
+
+    // Phase 10: Lifecycle & Host Management
+    public let lifecycle = ConnectionStateMachine(initialState: .idle)
+    public let reconnectPolicy = ReconnectPolicy()
+    public private(set) var reconnectAttempt: Int = 0
+    public private(set) var activeHostName: String?
+    public private(set) var activeConnectingHost: DiscoveredHost?
+    public private(set) var discoveredHosts: [DiscoveredHost] = []
+    public var onLifecycleChanged: ((ConnectionLifecycleState) -> Void)?
+    public var onDiscoveredHostsUpdated: (([DiscoveredHost]) -> Void)?
 
     // Callbacks
     public var onConnected: ((String) -> Void)?
@@ -60,41 +71,120 @@ public final class MirooReceiver: @unchecked Sendable {
 
     public init(clientName: String = "Miroo iPhone") {
         self.clientName = clientName
+        self.lifecycle.onStateTransition = { [weak self] oldState, newState in
+            self?.onLifecycleChanged?(newState)
+        }
     }
 
     deinit {
         stop()
     }
 
+    public var autoConnectOnDiscovery: Bool = false
+
     // MARK: - Discovery & Connection
 
-    public func start() {
+    public func startDiscovery() {
         queue.async { [weak self] in
             guard let self = self else { return }
             self.startTelemetryTimer()
             self.startUSBListener()
 
+            if self.lifecycle.currentState == .idle || self.lifecycle.currentState == .disconnected(reason: nil) {
+                _ = self.lifecycle.transition(to: .searching)
+            }
+
             print("[Miroo Receiver] Starting Bonjour service discovery for '_miroo._tcp'...")
             self.browser.onServicesUpdated = { [weak self] services in
                 guard let self = self else { return }
                 self.queue.async {
-                    if !self.isUSBActive,
-                       (self.connection == nil || self.connection?.state == .disconnected),
-                       let first = services.first {
-                        print("[Miroo Receiver] Found Miroo host: '\(first.name)'. Connecting...")
-                        self.connect(to: first.endpoint)
+                    var hosts: [DiscoveredHost] = []
+                    for s in services {
+                        let isUSB = self.isUSBActive
+                        hosts.append(DiscoveredHost(
+                            name: s.name,
+                            endpoint: s.endpoint,
+                            isUSB: isUSB,
+                            lastSeen: Date(),
+                            txtRecord: s.txtRecord
+                        ))
+                    }
+                    self.discoveredHosts = hosts
+                    self.onDiscoveredHostsUpdated?(hosts)
+
+                    // If reconnecting or autoConnectOnDiscovery is enabled:
+                    if (self.lifecycle.currentState.isReconnecting || self.autoConnectOnDiscovery) && !self.isUSBActive {
+                        if self.connection == nil || self.connection?.state == .disconnected {
+                            let target = self.activeConnectingHost ?? hosts.first
+                            if let target = target {
+                                print("[Miroo Receiver] Auto-connecting to '\(target.name)'...")
+                                self.startReceiving(targetHost: target)
+                            }
+                        }
                     }
                 }
             }
             self.browser.start()
 
-            // Check if service was already discovered
-            if !self.isUSBActive,
-               (self.connection == nil || self.connection?.state == .disconnected),
-               let cached = self.browser.discoveredServices.first {
-                print("[Miroo Receiver] Using previously discovered Miroo host: '\(cached.name)'. Connecting...")
-                self.connect(to: cached.endpoint)
+            // Check cached services
+            if !self.browser.discoveredServices.isEmpty {
+                var hosts: [DiscoveredHost] = []
+                for s in self.browser.discoveredServices {
+                    hosts.append(DiscoveredHost(name: s.name, endpoint: s.endpoint, isUSB: self.isUSBActive, lastSeen: Date(), txtRecord: s.txtRecord))
+                }
+                self.discoveredHosts = hosts
+                self.onDiscoveredHostsUpdated?(hosts)
             }
+        }
+    }
+
+    public func start() {
+        startDiscovery()
+    }
+
+    public func startReceiving(targetHost: DiscoveredHost? = nil) {
+        queue.async { [weak self] in
+            guard let self = self else { return }
+            self.isUserInitiatedStop = false
+            self.isAutoReconnectEnabled = true
+
+            // If USB is already active and connected, transition to connected immediately
+            if self.isUSBActive, let conn = self.connection, conn.state == .streaming || conn.state == .connected {
+                let name = targetHost?.name ?? self.activeHostName ?? "Mac (USB)"
+                self.activeHostName = name
+                _ = self.lifecycle.transition(to: .connected(host: name, transport: .usb))
+                return
+            }
+
+            let target = targetHost ?? self.discoveredHosts.first
+            guard let selectedHost = target ?? (self.isUSBActive ? DiscoveredHost(name: "Mac (USB)", endpoint: .hostPort(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: Self.usbPort)!), isUSB: true) : nil) else {
+                _ = self.lifecycle.transition(to: .error(message: "Mac Not Found"))
+                return
+            }
+
+            self.activeConnectingHost = selectedHost
+            self.activeHostName = selectedHost.name
+            let transport = TransportSelector.resolveTransport(isUSBActive: self.isUSBActive)
+            _ = self.lifecycle.transition(to: .connecting(target: selectedHost.name, transport: transport))
+
+            self.connect(to: selectedHost.endpoint)
+        }
+    }
+
+    public func stopReceiving() {
+        self.isUserInitiatedStop = true
+        self.isAutoReconnectEnabled = false
+        queue.async { [weak self] in
+            guard let self = self else { return }
+            self.stopPingTimer()
+            self.activeVideoTransport?.stop()
+            self.activeVideoTransport = nil
+            self.connection?.disconnect()
+            self.connection = nil
+            self.streamConfig = nil
+            self.reconnectAttempt = 0
+            _ = self.lifecycle.transition(to: .disconnected(reason: "Stopped by user"))
+            print("[Miroo Receiver] Receiving stopped by user.")
         }
     }
 
@@ -110,7 +200,8 @@ public final class MirooReceiver: @unchecked Sendable {
             let conn = MirooConnection(to: endpoint, queue: self.queue)
             self.connection = conn
 
-            conn.onStateChanged = { state in
+            conn.onStateChanged = { [weak self] state in
+                guard self != nil else { return }
                 print("[Miroo Receiver] Connection state: \(state)")
                 if state == .connected {
                     print("[Miroo Receiver] Connected to transport. Awaiting server HELLO...")
@@ -128,13 +219,34 @@ public final class MirooReceiver: @unchecked Sendable {
                 self.stopPingTimer()
                 self.connection = nil
                 self.streamConfig = nil
+                self.activeVideoTransport?.stop()
+                self.activeVideoTransport = nil
                 self.onDisconnected?(error)
 
+                if self.isUserInitiatedStop {
+                    _ = self.lifecycle.transition(to: .disconnected(reason: "Stopped by user"))
+                    return
+                }
+
                 if self.isAutoReconnectEnabled && !self.isUSBActive {
-                    print("[Miroo Receiver] Scheduling auto-reconnect in 1.5s...")
-                    self.queue.asyncAfter(deadline: .now() + 1.5) {
-                        self.start()
+                    self.reconnectAttempt += 1
+                    if self.reconnectPolicy.canRetry(attempt: self.reconnectAttempt) {
+                        let reason = error?.localizedDescription ?? "Connection Lost"
+                        _ = self.lifecycle.transition(to: .reconnecting(reason: reason, attempt: self.reconnectAttempt))
+                        let delay = self.reconnectPolicy.delay(forAttempt: self.reconnectAttempt)
+                        print("[Miroo Receiver] Scheduling auto-reconnect attempt #\(self.reconnectAttempt) in \(delay)s...")
+                        self.queue.asyncAfter(deadline: .now() + delay) {
+                            if let target = self.activeConnectingHost ?? self.discoveredHosts.first {
+                                self.startReceiving(targetHost: target)
+                            } else {
+                                self.startDiscovery()
+                            }
+                        }
+                    } else {
+                        _ = self.lifecycle.transition(to: .error(message: "Unable to reconnect to Mac after \(self.reconnectAttempt) attempts"))
                     }
+                } else if !self.isUSBActive {
+                    _ = self.lifecycle.transition(to: .disconnected(reason: error?.localizedDescription))
                 }
             }
 
@@ -143,7 +255,8 @@ public final class MirooReceiver: @unchecked Sendable {
     }
 
     public func stop() {
-        isAutoReconnectEnabled = false
+        self.isUserInitiatedStop = true
+        self.isAutoReconnectEnabled = false
         queue.async { [weak self] in
             guard let self = self else { return }
             self.stopPingTimer()
@@ -161,6 +274,8 @@ public final class MirooReceiver: @unchecked Sendable {
             self.lastSequenceNumber = 0
             self.totalDetectedGaps = 0
             self.framesLoggedCount = 0
+            self.reconnectAttempt = 0
+            _ = self.lifecycle.transition(to: .disconnected(reason: "Stopped"))
             print("[Miroo Receiver] Stopped.")
         }
     }
@@ -236,6 +351,7 @@ public final class MirooReceiver: @unchecked Sendable {
         case .hello:
             if let hello = message.decodePayload(HelloPayload.self) {
                 print("[Miroo Receiver] Received HELLO from '\(hello.name)' (role: \(hello.role))")
+                self.activeHostName = hello.name
                 onConnected?(hello.name)
             }
             let reply = MirooMessage.hello(name: clientName, role: "receiver")
@@ -268,6 +384,9 @@ public final class MirooReceiver: @unchecked Sendable {
                     // Start 250ms ping loop for precise RTT measurement
                     self.startPingTimer(conn: conn)
                 }
+
+                self.reconnectAttempt = 0
+                _ = self.lifecycle.transition(to: .connected(host: self.activeHostName ?? "Miroo Mac", transport: self.currentTransportType))
 
                 self.setupTransport(
                     type: VideoTransportType(rawValue: config.transport) ?? .tcp,
@@ -604,12 +723,16 @@ public final class MirooReceiver: @unchecked Sendable {
             self.isUSBActive = true
             self.currentTransportType = .usb
             self.browser.stop() // Pause Bonjour browsing while on USB
+            self.reconnectAttempt = 0
+
+            let hostName = self.activeHostName ?? "Mac (USB)"
+            _ = self.lifecycle.transition(to: .connected(host: hostName, transport: .usb))
 
             let conn = MirooConnection(connection: newNWConn, queue: self.queue)
             self.connection = conn
 
             conn.onStateChanged = { [weak self] state in
-                guard let self = self else { return }
+                guard self != nil else { return }
                 print("[Miroo Receiver] USB Connection state: \(state)")
                 if state == .connected {
                     print("[Miroo Receiver] USB connected to Mac. Awaiting server HELLO...")
@@ -632,12 +755,25 @@ public final class MirooReceiver: @unchecked Sendable {
                 self.activeVideoTransport = nil
                 self.onDisconnected?(error)
 
+                if self.isUserInitiatedStop {
+                    _ = self.lifecycle.transition(to: .disconnected(reason: "Stopped by user"))
+                    return
+                }
+
                 // Disconnect safety: fall back to Wi-Fi auto-reconnect if enabled
                 if self.isAutoReconnectEnabled {
-                    print("[Miroo Receiver] USB disconnected. Falling back to Wi-Fi in 1.0s...")
-                    self.queue.asyncAfter(deadline: .now() + 1.0) {
-                        self.start()
+                    self.reconnectAttempt += 1
+                    _ = self.lifecycle.transition(to: .reconnecting(reason: "USB Disconnected", attempt: self.reconnectAttempt))
+                    print("[Miroo Receiver] USB disconnected. Attempting Wi-Fi fallback...")
+                    self.queue.asyncAfter(deadline: .now() + 0.5) {
+                        self.startDiscovery()
+                        if let wifiHost = self.discoveredHosts.first(where: { !$0.isUSB }) ?? self.discoveredHosts.first {
+                            print("[Miroo Receiver] Found Wi-Fi fallback host: '\(wifiHost.name)'. Connecting...")
+                            self.startReceiving(targetHost: wifiHost)
+                        }
                     }
+                } else {
+                    _ = self.lifecycle.transition(to: .disconnected(reason: "USB Disconnected"))
                 }
             }
 
