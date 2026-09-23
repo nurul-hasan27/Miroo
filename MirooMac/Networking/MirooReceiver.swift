@@ -24,9 +24,14 @@ public final class MirooReceiver: @unchecked Sendable {
     private(set) public var displayInfo: DisplayInfoPayload?
     private(set) public var streamConfig: StreamConfigPayload?
 
-    // Transport Abstraction (Phase 8A)
+    // Transport Abstraction (Phase 8A & 8B)
     public private(set) var activeVideoTransport: (any VideoReceiverTransport)?
     public private(set) var currentTransportType: VideoTransportType = .tcp
+
+    // USB Transport (Phase 8B)
+    public static let usbPort: UInt16 = 51065
+    private var usbListener: NWListener?
+    public private(set) var isUSBActive: Bool = false
 
     // Sequence continuity tracking
     private var lastSequenceNumber: UInt64 = 0
@@ -64,12 +69,14 @@ public final class MirooReceiver: @unchecked Sendable {
         queue.async { [weak self] in
             guard let self = self else { return }
             self.startTelemetryTimer()
+            self.startUSBListener()
 
             print("[Miroo Receiver] Starting Bonjour service discovery for '_miroo._tcp'...")
             self.browser.onServicesUpdated = { [weak self] services in
                 guard let self = self else { return }
                 self.queue.async {
-                    if (self.connection == nil || self.connection?.state == .disconnected),
+                    if !self.isUSBActive,
+                       (self.connection == nil || self.connection?.state == .disconnected),
                        let first = services.first {
                         print("[Miroo Receiver] Found Miroo host: '\(first.name)'. Connecting...")
                         self.connect(to: first.endpoint)
@@ -79,7 +86,8 @@ public final class MirooReceiver: @unchecked Sendable {
             self.browser.start()
 
             // Check if service was already discovered
-            if (self.connection == nil || self.connection?.state == .disconnected),
+            if !self.isUSBActive,
+               (self.connection == nil || self.connection?.state == .disconnected),
                let cached = self.browser.discoveredServices.first {
                 print("[Miroo Receiver] Using previously discovered Miroo host: '\(cached.name)'. Connecting...")
                 self.connect(to: cached.endpoint)
@@ -90,6 +98,10 @@ public final class MirooReceiver: @unchecked Sendable {
     public func connect(to endpoint: NWEndpoint) {
         queue.async { [weak self] in
             guard let self = self else { return }
+            if self.isUSBActive {
+                print("[Miroo Receiver] Ignoring Wi-Fi discovery connect because USB is active.")
+                return
+            }
             self.connection?.disconnect()
 
             let conn = MirooConnection(to: endpoint, queue: self.queue)
@@ -115,7 +127,7 @@ public final class MirooReceiver: @unchecked Sendable {
                 self.streamConfig = nil
                 self.onDisconnected?(error)
 
-                if self.isAutoReconnectEnabled {
+                if self.isAutoReconnectEnabled && !self.isUSBActive {
                     print("[Miroo Receiver] Scheduling auto-reconnect in 1.5s...")
                     self.queue.asyncAfter(deadline: .now() + 1.5) {
                         self.start()
@@ -137,6 +149,9 @@ public final class MirooReceiver: @unchecked Sendable {
             self.activeVideoTransport?.stop()
             self.activeVideoTransport = nil
             self.browser.stop()
+            self.usbListener?.cancel()
+            self.usbListener = nil
+            self.isUSBActive = false
             self.connection?.disconnect()
             self.connection = nil
             self.streamConfig = nil
@@ -340,6 +355,23 @@ public final class MirooReceiver: @unchecked Sendable {
             }
             self.activeVideoTransport = udp
             udp.start()
+        } else if type == .usb {
+            print("[Miroo Receiver] Active transport is USB (zero-latency direct cable).")
+            let usb = USBVideoReceiverTransport()
+            usb.onFrameReceived = { [weak self] seq, pts, isKeyframe, data, timing, recvNs, netTransitMs, jitterMs in
+                self?.deliverFrame(
+                    seq: seq,
+                    pts: pts,
+                    isKeyframe: isKeyframe,
+                    annexBData: data,
+                    timing: timing,
+                    networkReceiveTimestampNs: recvNs,
+                    netTransitMs: netTransitMs,
+                    jitterMs: jitterMs
+                )
+            }
+            self.activeVideoTransport = usb
+            usb.start()
         } else {
             print("[Miroo Receiver] Active transport is TCP (baseline).")
             let tcp = TCPVideoReceiverTransport()
@@ -481,5 +513,89 @@ public final class MirooReceiver: @unchecked Sendable {
         print(" Smoothed RTT: \(String(format: "%.2f", smoothedRTTMs)) ms (1-way Net: ~\(String(format: "%.2f", smoothedRTTMs / 2.0)) ms)")
         print(" Frame Jitter: \(String(format: "%.2f", smoothedJitterMs)) ms")
         print("--------------------------------------------")
+    }
+
+    // MARK: - USB Listener & Connection (Phase 8B)
+
+    private func startUSBListener() {
+        guard usbListener == nil else { return }
+        do {
+            let tcpOptions = NWProtocolTCP.Options()
+            tcpOptions.noDelay = true
+            tcpOptions.enableFastOpen = true
+            let params = NWParameters(tls: nil, tcp: tcpOptions)
+            params.allowLocalEndpointReuse = true
+            params.serviceClass = .interactiveVideo
+
+            let l = try NWListener(using: params, on: NWEndpoint.Port(rawValue: Self.usbPort)!)
+            l.newConnectionHandler = { [weak self] newConn in
+                self?.handleInboundUSBConnection(newConn)
+            }
+            l.stateUpdateHandler = { state in
+                if case .ready = state {
+                    print("[Miroo Receiver] USB listener active on port \(Self.usbPort). Ready for Mac USB tunnel.")
+                }
+            }
+            l.start(queue: queue)
+            self.usbListener = l
+        } catch {
+            print("[Miroo Receiver] Failed to start USB listener on port \(Self.usbPort): \(error.localizedDescription)")
+        }
+    }
+
+    private func handleInboundUSBConnection(_ newNWConn: NWConnection) {
+        queue.async { [weak self] in
+            guard let self = self else { return }
+            print("[Miroo Receiver] Incoming USB connection from Mac via usbmuxd tunnel!")
+
+            // USB has highest priority: disconnect any active Wi-Fi connection
+            if let existing = self.connection {
+                print("[Miroo Receiver] Prioritizing USB connection over existing Wi-Fi connection. Disconnecting old connection...")
+                existing.disconnect()
+                self.connection = nil
+            }
+
+            self.isUSBActive = true
+            self.currentTransportType = .usb
+            self.browser.stop() // Pause Bonjour browsing while on USB
+
+            let conn = MirooConnection(connection: newNWConn, queue: self.queue)
+            self.connection = conn
+
+            conn.onStateChanged = { [weak self] state in
+                guard let self = self else { return }
+                print("[Miroo Receiver] USB Connection state: \(state)")
+                if state == .connected {
+                    print("[Miroo Receiver] USB connected to Mac. Awaiting server HELLO...")
+                }
+            }
+
+            conn.onMessageReceived = { [weak self, weak conn] message in
+                guard let self = self, let conn = conn else { return }
+                self.handleMessage(message, from: conn)
+            }
+
+            conn.onDisconnected = { [weak self] error in
+                guard let self = self else { return }
+                print("[Miroo Receiver] USB disconnected: \(error?.localizedDescription ?? "Clean close")")
+                self.isUSBActive = false
+                self.stopPingTimer()
+                self.connection = nil
+                self.streamConfig = nil
+                self.activeVideoTransport?.stop()
+                self.activeVideoTransport = nil
+                self.onDisconnected?(error)
+
+                // Disconnect safety: fall back to Wi-Fi auto-reconnect if enabled
+                if self.isAutoReconnectEnabled {
+                    print("[Miroo Receiver] USB disconnected. Falling back to Wi-Fi in 1.0s...")
+                    self.queue.asyncAfter(deadline: .now() + 1.0) {
+                        self.start()
+                    }
+                }
+            }
+
+            conn.start()
+        }
     }
 }

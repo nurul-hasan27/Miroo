@@ -245,6 +245,7 @@ public struct PipelineBenchmarkReport: Codable, Sendable {
     public let decodeToRender: PercentileStats
     public let glassToRender: PercentileStats
     public let frameAge: PercentileStats
+    public let transport: String?
 
     public init(
         timestamp: Date = Date(),
@@ -259,7 +260,8 @@ public struct PipelineBenchmarkReport: Codable, Sendable {
         decodeDuration: PercentileStats,
         decodeToRender: PercentileStats,
         glassToRender: PercentileStats,
-        frameAge: PercentileStats
+        frameAge: PercentileStats,
+        transport: String? = nil
     ) {
         self.timestamp = timestamp
         self.sessionDurationSeconds = sessionDurationSeconds
@@ -274,6 +276,7 @@ public struct PipelineBenchmarkReport: Codable, Sendable {
         self.decodeToRender = decodeToRender
         self.glassToRender = glassToRender
         self.frameAge = frameAge
+        self.transport = transport
     }
 
     public func toJSONString() -> String? {
@@ -300,9 +303,10 @@ public struct PipelineBenchmarkReport: Codable, Sendable {
             )
         }
 
+        let tStr = transport != nil ? " [Transport: \(transport!)]" : ""
         return """
         ========================================================================================
-                                 MIROO PIPELINE LATENCY BENCHMARK
+                                 MIROO PIPELINE LATENCY BENCHMARK\(tStr)
         ========================================================================================
         Duration: \(String(format: "%.1f", sessionDurationSeconds))s | Samples Rendered: \(counters.framesRendered)
 
@@ -350,6 +354,7 @@ public final class PipelineBenchmark: @unchecked Sendable {
 
     private var lock = os_unfair_lock_s()
     private var sessionStartTime: CFTimeInterval = CACurrentMediaTime()
+    public var activeTransport: String = "TCP"
 
     // Stage metrics
     private var captureToEncodeMetric = RollingMetric(capacity: 1000)
@@ -568,7 +573,8 @@ public final class PipelineBenchmark: @unchecked Sendable {
             decodeDuration: decodeDurationMetric.stats(),
             decodeToRender: decodeToRenderMetric.stats(),
             glassToRender: glassToRenderMetric.stats(),
-            frameAge: frameAgeMetric.stats()
+            frameAge: frameAgeMetric.stats(),
+            transport: activeTransport
         )
     }
 

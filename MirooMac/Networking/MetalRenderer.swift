@@ -110,15 +110,47 @@ public struct RenderViewportLayout: Equatable, Sendable {
         viewBounds: CGRect,
         safeAreaInsets: UIEdgeInsets,
         drawableSize: CGSize,
-        videoSize: CGSize
+        videoSize: CGSize,
+        interfaceOrientation: UIInterfaceOrientation = .unknown
     ) -> RenderViewportLayout {
         let scaleX: CGFloat = viewBounds.width > 0 ? (drawableSize.width / viewBounds.width) : 1.0
         let scaleY: CGFloat = viewBounds.height > 0 ? (drawableSize.height / viewBounds.height) : 1.0
 
-        let usableX = safeAreaInsets.left
-        let usableY = safeAreaInsets.top
-        let usableWidth = max(0, viewBounds.width - safeAreaInsets.left - safeAreaInsets.right)
-        let usableHeight = max(0, viewBounds.height - safeAreaInsets.top - safeAreaInsets.bottom)
+        var effectiveInsets = safeAreaInsets
+        if viewBounds.width > viewBounds.height {
+            // In landscape, the physical notch / Dynamic Island is strictly on ONE side.
+            // Symmetrical horizontal insets reported by UIKit reflect generic document centering.
+            // For a video display, only the actual notch side must be excluded; the non-notch
+            // edge is kept at 0 to maximize usable screen real estate with zero cropping.
+            let notchInset = max(safeAreaInsets.left, safeAreaInsets.right)
+            if interfaceOrientation == .landscapeLeft {
+                // UIInterfaceOrientationLandscapeLeft: Notch is physically on the right
+                effectiveInsets.left = 0
+                effectiveInsets.right = notchInset
+            } else if interfaceOrientation == .landscapeRight {
+                // UIInterfaceOrientationLandscapeRight: Notch is physically on the left
+                effectiveInsets.left = notchInset
+                effectiveInsets.right = 0
+            } else if safeAreaInsets.left > 0 && safeAreaInsets.right > 0 {
+                let devOrient = UIDevice.current.orientation
+                if devOrient == .landscapeLeft {
+                    effectiveInsets.left = notchInset
+                    effectiveInsets.right = 0
+                } else if devOrient == .landscapeRight {
+                    effectiveInsets.left = 0
+                    effectiveInsets.right = notchInset
+                } else {
+                    // Standard landscape default: notch on left
+                    effectiveInsets.left = notchInset
+                    effectiveInsets.right = 0
+                }
+            }
+        }
+
+        let usableX = effectiveInsets.left
+        let usableY = effectiveInsets.top
+        let usableWidth = max(0, viewBounds.width - effectiveInsets.left - effectiveInsets.right)
+        let usableHeight = max(0, viewBounds.height - effectiveInsets.top - effectiveInsets.bottom)
         let usableRectPoints = CGRect(x: usableX, y: usableY, width: usableWidth, height: usableHeight)
 
         let usableRectPixels = CGRect(
@@ -152,7 +184,7 @@ public struct RenderViewportLayout: Equatable, Sendable {
 
         return RenderViewportLayout(
             viewBounds: viewBounds,
-            safeAreaInsets: safeAreaInsets,
+            safeAreaInsets: effectiveInsets,
             usableRectPoints: usableRectPoints,
             usableRectPixels: usableRectPixels,
             videoSize: videoSize,
@@ -297,9 +329,13 @@ public final class MetalRenderer: NSObject, MTKViewDelegate, @unchecked Sendable
 
     #if os(iOS)
     public func updateViewLayout(bounds: CGRect, safeAreaInsets: UIEdgeInsets) {
+        let wasLandscape = cachedViewBounds.width > cachedViewBounds.height
+        let isLandscape = bounds.width > bounds.height
         self.cachedViewBounds = bounds
         if safeAreaInsets != .zero {
             self.cachedSafeAreaInsets = safeAreaInsets
+        } else if wasLandscape != isLandscape {
+            self.cachedSafeAreaInsets = nil
         }
     }
     #elseif os(macOS)
@@ -521,11 +557,13 @@ public final class MetalRenderer: NSObject, MTKViewDelegate, @unchecked Sendable
         } else {
             cachedSafeAreaInsets = insets
         }
+        let interfaceOrientation = view.window?.windowScene?.interfaceOrientation ?? .unknown
         let layout = RenderViewportLayout.compute(
             viewBounds: viewBounds,
             safeAreaInsets: insets,
             drawableSize: view.drawableSize,
-            videoSize: videoSize
+            videoSize: videoSize,
+            interfaceOrientation: interfaceOrientation
         )
         #elseif os(macOS)
         let layout = RenderViewportLayout.compute(
@@ -550,13 +588,19 @@ public final class MetalRenderer: NSObject, MTKViewDelegate, @unchecked Sendable
             let lftPx = Int(round(layout.safeAreaInsets.left * layout.scaleX))
             let rgtPx = Int(round(layout.safeAreaInsets.right * layout.scaleX))
             let orient = (layout.drawableSize.width > layout.drawableSize.height) ? "Landscape" : "Portrait"
+            let macAspect = layout.videoSize.height > 0 ? (layout.videoSize.width / layout.videoSize.height) : 0.0
+            let renderAspect = layout.renderRectPixels.height > 0 ? (layout.renderRectPixels.width / layout.renderRectPixels.height) : 0.0
+            let aspectError = abs(renderAspect - macAspect)
             print("""
             [Miroo Layout]
-            Screen: \(Int(layout.drawableSize.width)) × \(Int(layout.drawableSize.height))
-            Safe Area: top=\(topPx), bottom=\(btmPx), left=\(lftPx), right=\(rgtPx)
-            Usable: \(Int(layout.usableRectPixels.width)) × \(Int(layout.usableRectPixels.height))
-            Video: \(Int(layout.videoSize.width)) × \(Int(layout.videoSize.height))
-            RenderRect: x=\(Int(layout.renderRectPixels.minX)), y=\(Int(layout.renderRectPixels.minY)), w=\(Int(layout.renderRectPixels.width)), h=\(Int(layout.renderRectPixels.height))
+            Screen size: \(Int(layout.drawableSize.width)) × \(Int(layout.drawableSize.height)) px (\(Int(layout.viewBounds.width)) × \(Int(layout.viewBounds.height)) pt)
+            Safe-area insets: top=\(topPx), bottom=\(btmPx), left=\(lftPx), right=\(rgtPx) px
+            Usable rectangle: x=\(Int(layout.usableRectPixels.minX)), y=\(Int(layout.usableRectPixels.minY)), w=\(Int(layout.usableRectPixels.width)), h=\(Int(layout.usableRectPixels.height)) px
+            Mac video resolution: \(Int(layout.videoSize.width)) × \(Int(layout.videoSize.height)) px
+            Mac aspect ratio: \(String(format: "%.6f", macAspect))
+            Render rectangle: x=\(Int(layout.renderRectPixels.minX)), y=\(Int(layout.renderRectPixels.minY)), w=\(Int(layout.renderRectPixels.width)), h=\(Int(layout.renderRectPixels.height)) px
+            Final rendered aspect ratio: \(String(format: "%.6f", renderAspect))
+            Aspect-ratio error: \(String(format: "%.6f", aspectError))
             Orientation: \(orient)
             """)
             #endif
@@ -757,6 +801,7 @@ public final class MetalRenderer: NSObject, MTKViewDelegate, @unchecked Sendable
                 onTelemetryUpdate?(currentFps, averageRenderLatencyMs, avgDecodeMs, pipelineSum)
 
                 if totalFramesRendered % 120 == 0 && totalFramesRendered > 0 {
+                    print("[Miroo Benchmark Device]\n\(benchReport.formattedSummary())")
                     onBenchmarkReportGenerated?(benchReport)
                 }
             }
