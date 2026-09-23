@@ -68,6 +68,13 @@ public struct FrameDiagnostics: Sendable {
     public var displayDrops: UInt64
     public var staleDrops: UInt64
 
+    // Phase 9 Adaptive Streaming & HUD
+    public var targetFps: Double
+    public var packetLossRate: Double
+    public var packetLossCount: UInt64
+    public var keyframeRequestCount: UInt64
+    public var adaptiveState: String
+
     public init(
         captureMs: Double = 0.0,
         encodeMs: Double = 0.0,
@@ -115,7 +122,12 @@ public struct FrameDiagnostics: Sendable {
         serverDrops: UInt64 = 0,
         sequenceGaps: UInt64 = 0,
         displayDrops: UInt64 = 0,
-        staleDrops: UInt64 = 0
+        staleDrops: UInt64 = 0,
+        targetFps: Double = 60.0,
+        packetLossRate: Double = 0.0,
+        packetLossCount: UInt64 = 0,
+        keyframeRequestCount: UInt64 = 0,
+        adaptiveState: String = "Stable"
     ) {
         self.captureMs = captureMs
         self.encodeMs = encodeMs
@@ -164,6 +176,11 @@ public struct FrameDiagnostics: Sendable {
         self.sequenceGaps = sequenceGaps
         self.displayDrops = displayDrops
         self.staleDrops = staleDrops
+        self.targetFps = targetFps
+        self.packetLossRate = packetLossRate
+        self.packetLossCount = packetLossCount
+        self.keyframeRequestCount = keyframeRequestCount
+        self.adaptiveState = adaptiveState
     }
 }
 

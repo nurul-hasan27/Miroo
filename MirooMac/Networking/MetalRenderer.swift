@@ -305,6 +305,11 @@ public final class MetalRenderer: NSObject, MTKViewDelegate, @unchecked Sendable
     // Diagnostics & Stage Latency Tracking
     public var currentJitterMs: Double = 0.5
     public var currentBitrateMbps: Double = 15.0
+    public var targetFps: Double = 60.0
+    public var currentAdaptiveState: String = "Stable"
+    public var currentPacketLossRate: Double = 0.0
+    public var currentPacketLossCount: UInt64 = 0
+    public var currentKeyframeRequests: UInt64 = 0
     public var onDiagnosticsUpdate: ((FrameDiagnostics) -> Void)?
     public var onBenchmarkReportGenerated: ((PipelineBenchmarkReport) -> Void)?
 
@@ -794,7 +799,12 @@ public final class MetalRenderer: NSObject, MTKViewDelegate, @unchecked Sendable
                     serverDrops: benchReport.counters.serverQueueDrops,
                     sequenceGaps: benchReport.counters.sequenceGaps,
                     displayDrops: benchReport.counters.displayDrops,
-                    staleDrops: benchReport.counters.staleDrops
+                    staleDrops: benchReport.counters.staleDrops,
+                    targetFps: targetFps,
+                    packetLossRate: currentPacketLossRate,
+                    packetLossCount: currentPacketLossCount,
+                    keyframeRequestCount: currentKeyframeRequests,
+                    adaptiveState: currentAdaptiveState
                 )
 
                 onDiagnosticsUpdate?(diag)

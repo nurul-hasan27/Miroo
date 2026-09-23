@@ -156,7 +156,14 @@ final class ReceiverViewModel: ObservableObject {
         receiver.onFrameReceived = { [weak self] seq, pts, isKeyframe, data, timing, netRecvNs, netTransitMs, jitterMs in
             guard let self = self else { return }
             self.renderer?.currentJitterMs = jitterMs
-            self.renderer?.currentBitrateMbps = self.receiver.metrics.snapshot().recvThroughputMbps
+            let snap = self.receiver.metrics.snapshot()
+            self.renderer?.currentBitrateMbps = snap.recvThroughputMbps
+            self.renderer?.currentKeyframeRequests = self.receiver.totalKeyframeRequestsSent
+            self.renderer?.currentPacketLossCount = self.receiver.totalDetectedGaps
+            let lossRate = (snap.framesReceived > 0) ? Double(self.receiver.totalDetectedGaps) / Double(snap.framesReceived + self.receiver.totalDetectedGaps) : 0.0
+            self.renderer?.currentPacketLossRate = lossRate
+            self.renderer?.currentAdaptiveState = self.receiver.adaptiveController.state.rawValue
+            self.renderer?.targetFps = Double(self.receiver.adaptiveController.currentTargetFPS)
 
             self.decoder.decode(
                 annexBData: data,
@@ -434,6 +441,16 @@ struct DiagnosticHUDView: View {
             }
 
             HStack {
+                Text("Adaptive")
+                    .font(.system(size: 11, weight: .regular, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.85))
+                Spacer()
+                Text(d.adaptiveState)
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundColor(d.adaptiveState == "Stable" ? .green : (d.adaptiveState == "Congested" ? .orange : .yellow))
+            }
+
+            HStack {
                 Text("Mode")
                     .font(.system(size: 11, weight: .regular, design: .monospaced))
                     .foregroundColor(.white.opacity(0.85))
@@ -476,13 +493,13 @@ struct DiagnosticHUDView: View {
 
             Divider().background(Color.white.opacity(0.25))
 
-            hudRow(label: "FPS (Ren/Cap)", value: String(format: "%.1f / %.1f", d.fps, d.captureFps > 0 ? d.captureFps : d.fps))
-            hudRow(label: "Frame Jitter", value: String(format: "%.1f ms", d.jitterMs))
-            hudRow(label: "Drops (Stale)", value: "\(d.staleDrops) (\(String(format: "%.1f%%", d.dropPercentage)))")
-            if d.sequenceGaps > 0 {
-                hudRow(label: "Sequence Gaps", value: "\(d.sequenceGaps)")
-            }
+            hudRow(label: "FPS (Cur/Tgt)", value: String(format: "%.1f / %.0f", d.fps, d.targetFps))
             hudRow(label: "Bitrate", value: String(format: "%.1f Mbps", d.bitrateMbps))
+            hudRow(label: "Queue Depth", value: "\(d.queueDepth)")
+            hudRow(label: "Frame Jitter", value: String(format: "%.1f ms", d.jitterMs))
+            hudRow(label: "Drops", value: "\(d.staleDrops + d.displayDrops) (\(String(format: "%.1f%%", d.dropPercentage)))")
+            hudRow(label: "Packet Loss", value: "\(String(format: "%.1f%%", d.packetLossRate * 100)) (\(d.sequenceGaps))")
+            hudRow(label: "Keyframe Reqs", value: "\(d.keyframeRequestCount)")
 
             if !d.renderRectStr.isEmpty {
                 Divider().background(Color.white.opacity(0.25))

@@ -62,6 +62,12 @@ public final class FrameQueue: @unchecked Sendable {
         self.maxDepth = max(1, maxDepth)
     }
 
+    public var currentDepth: Int {
+        os_unfair_lock_lock(&lock)
+        defer { os_unfair_lock_unlock(&lock) }
+        return storage.count
+    }
+
     /// Enqueues a video frame. Implements bounded drop-stale backpressure.
     /// Returns true if frame was accepted into queue, false if dropped immediately.
     @discardableResult

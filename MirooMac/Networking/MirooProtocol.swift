@@ -25,6 +25,7 @@ public enum MirooMessageType: UInt8, Sendable, CustomStringConvertible {
     case benchmarkReport    = 13
     case keyframeRequest    = 14
     case setTransport       = 15
+    case adaptiveFeedback   = 16
 
     public var description: String {
         switch self {
@@ -43,6 +44,7 @@ public enum MirooMessageType: UInt8, Sendable, CustomStringConvertible {
         case .benchmarkReport:    return "BENCHMARK_REPORT"
         case .keyframeRequest:    return "KEYFRAME_REQUEST"
         case .setTransport:       return "SET_TRANSPORT"
+        case .adaptiveFeedback:   return "ADAPTIVE_FEEDBACK"
         }
     }
 }
@@ -766,8 +768,67 @@ extension MirooMessage {
         return try? JSONDecoder().decode(SetTransportPayload.self, from: payload)
     }
 
+    public static func adaptiveFeedback(_ payload: AdaptiveFeedbackPayload) -> MirooMessage {
+        MirooMessage(type: .adaptiveFeedback, payload: payload.serialize())
+    }
+
+    public func decodeAdaptiveFeedback() -> AdaptiveFeedbackPayload? {
+        guard header.messageType == .adaptiveFeedback else { return nil }
+        return AdaptiveFeedbackPayload.deserialize(from: payload)
+    }
+
     public func decodePayload<T: Decodable>(_ type: T.Type) -> T? {
         try? JSONDecoder().decode(type, from: payload)
+    }
+}
+
+// MARK: - Phase 9 Adaptive Feedback Payload
+
+public struct AdaptiveFeedbackPayload: Codable, Sendable, Equatable {
+    public let rttMs: Double
+    public let networkTransitMs: Double
+    public let jitterMs: Double
+    public let packetLossRate: Double
+    public let sequenceGaps: UInt64
+    public let staleDrops: UInt64
+    public let decoderDrops: UInt64
+    public let displayDrops: UInt64
+    public let receiverFPS: Double
+    public let currentFrameAgeMs: Double
+    public let transport: String
+
+    public init(
+        rttMs: Double,
+        oneWayTransitMs: Double = 0.0,
+        jitterMs: Double = 0.0,
+        packetLossRate: Double = 0.0,
+        sequenceGaps: UInt64 = 0,
+        staleDrops: UInt64 = 0,
+        decoderDrops: UInt64 = 0,
+        displayDrops: UInt64 = 0,
+        receiverFPS: Double = 60.0,
+        currentFrameAgeMs: Double = 0.0,
+        transport: String = "TCP"
+    ) {
+        self.rttMs = rttMs
+        self.networkTransitMs = oneWayTransitMs
+        self.jitterMs = jitterMs
+        self.packetLossRate = packetLossRate
+        self.sequenceGaps = sequenceGaps
+        self.staleDrops = staleDrops
+        self.decoderDrops = decoderDrops
+        self.displayDrops = displayDrops
+        self.receiverFPS = receiverFPS
+        self.currentFrameAgeMs = currentFrameAgeMs
+        self.transport = transport
+    }
+
+    public func serialize() -> Data {
+        (try? JSONEncoder().encode(self)) ?? Data()
+    }
+
+    public static func deserialize(from data: Data) -> AdaptiveFeedbackPayload? {
+        try? JSONDecoder().decode(AdaptiveFeedbackPayload.self, from: data)
     }
 }
 

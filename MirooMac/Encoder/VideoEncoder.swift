@@ -44,11 +44,38 @@ public final class VideoEncoder {
     // MARK: - Configuration
     public private(set) var width: Int32
     public private(set) var height: Int32
-    public let targetFPS: Int32
-    public let averageBitrate: Int32
+    public private(set) var targetFPS: Int32
+    public private(set) var averageBitrate: Int32
     public let keyframeInterval: Int32
 
     private var sessionLock = os_unfair_lock_s()
+    private var lastEncodedFrameTime: CFTimeInterval = 0
+
+    /// Dynamically updates the compression bitrate on the fly without session teardown.
+    public func setBitrate(_ newBitrate: Int32) {
+        os_unfair_lock_lock(&sessionLock)
+        defer { os_unfair_lock_unlock(&sessionLock) }
+        guard newBitrate != averageBitrate else { return }
+        self.averageBitrate = newBitrate
+        guard let session = session else { return }
+
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: newBitrate as CFNumber)
+        let byteLimit = Double(newBitrate) / 8.0 * 1.5
+        let dataRateLimits: [Double] = [byteLimit, 1.0]
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_DataRateLimits, value: dataRateLimits as CFArray)
+    }
+
+    /// Dynamically updates target encoding framerate on the fly without session teardown.
+    public func setTargetFPS(_ newFPS: Int32) {
+        os_unfair_lock_lock(&sessionLock)
+        defer { os_unfair_lock_unlock(&sessionLock) }
+        guard newFPS != targetFPS else { return }
+        self.targetFPS = newFPS
+        guard let session = session else { return }
+
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: newFPS as CFNumber)
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, value: (Double(keyframeInterval) / Double(newFPS)) as CFNumber)
+    }
 
     /// Dynamically reconfigures the encoder for new frame dimensions (orientation change).
     /// Flushes and tears down the old compression session, resets session state, and creates a new one.
@@ -259,6 +286,17 @@ public final class VideoEncoder {
 
         let shouldForce = forceKeyframe || forceNextKeyframe
         forceNextKeyframe = false
+
+        // Dynamic framerate throttling if targetFPS is reduced due to congestion
+        let nowSec = CACurrentMediaTime()
+        if !shouldForce && targetFPS < 60 && lastEncodedFrameTime > 0 {
+            let minInterval = (1.0 / Double(targetFPS)) - 0.003
+            if (nowSec - lastEncodedFrameTime) < minInterval {
+                os_unfair_lock_unlock(&sessionLock)
+                return
+            }
+        }
+        lastEncodedFrameTime = nowSec
 
         var frameProps: CFDictionary? = nil
         if shouldForce {

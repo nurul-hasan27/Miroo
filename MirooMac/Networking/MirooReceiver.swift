@@ -35,7 +35,7 @@ public final class MirooReceiver: @unchecked Sendable {
 
     // Sequence continuity tracking
     private var lastSequenceNumber: UInt64 = 0
-    private var totalDetectedGaps: UInt64 = 0
+    public private(set) var totalDetectedGaps: UInt64 = 0
     private var framesLoggedCount: Int = 0
 
     // RTT & Jitter tracking
@@ -54,6 +54,9 @@ public final class MirooReceiver: @unchecked Sendable {
     public var onDisconnected: ((Error?) -> Void)?
     public var onStreamConfigUpdated: ((StreamConfigPayload) -> Void)?
     public var onFrameReceived: ((_ seq: UInt64, _ pts: Int64, _ isKeyframe: Bool, _ data: Data, _ timing: VideoFrameTiming?, _ networkReceiveTimestampNs: UInt64, _ netTransitMs: Double, _ jitterMs: Double) -> Void)?
+    public let keyframeDebouncer = KeyframeDebouncer(cooldownSeconds: 0.500)
+    public let adaptiveController = AdaptiveStreamingController()
+    public private(set) var totalKeyframeRequestsSent: UInt64 = 0
 
     public init(clientName: String = "Miroo iPhone") {
         self.clientName = clientName
@@ -163,11 +166,24 @@ public final class MirooReceiver: @unchecked Sendable {
     }
 
     /// Asynchronously sends a KEYFRAME_REQUEST to the Mac server over the reliable TCP control channel.
+    /// Debounces requests under cooldown to prevent keyframe request storms.
     public func requestKeyframe(reason: String = "client_request") {
         queue.async { [weak self] in
             guard let self = self, let conn = self.connection else { return }
-            print("[Miroo Receiver] Requesting IDR keyframe from server (reason: \(reason))...")
+            guard self.keyframeDebouncer.shouldRequest() else {
+                return
+            }
+            self.totalKeyframeRequestsSent += 1
+            print("[Miroo Receiver] Requesting IDR keyframe from server (reason: \(reason), request #\(self.totalKeyframeRequestsSent))...")
             conn.send(message: MirooMessage.keyframeRequest(reason: reason))
+        }
+    }
+
+    /// Sends periodic adaptive streaming feedback to the Mac server.
+    public func sendAdaptiveFeedback(_ feedback: AdaptiveFeedbackPayload) {
+        queue.async { [weak self] in
+            guard let self = self, let conn = self.connection, conn.state == .streaming else { return }
+            conn.send(message: .adaptiveFeedback(feedback))
         }
     }
 
@@ -474,9 +490,39 @@ public final class MirooReceiver: @unchecked Sendable {
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now() + 0.5, repeating: 0.5)
         timer.setEventHandler { [weak self, weak conn] in
-            guard let _ = self, let conn = conn, conn.state == .streaming else { return }
+            guard let self = self, let conn = conn, conn.state == .streaming else { return }
             let nowNs = Int64(CACurrentMediaTime() * 1_000_000_000)
             conn.send(message: .ping(timestamp: nowNs))
+
+            // Phase 9: Transmit live telemetry to Mac server for adaptive regulation
+            let snap = self.metrics.snapshot()
+            let bench = PipelineBenchmark.shared.generateReport()
+            let lossRate: Double = (snap.framesReceived > 0) ? Double(self.totalDetectedGaps) / Double(snap.framesReceived + self.totalDetectedGaps) : 0.0
+            let metricsSnapshot = StreamingMetricsSnapshot(
+                transportType: self.currentTransportType,
+                rttMs: self.smoothedRTTMs,
+                oneWayTransitMs: max(0.5, self.smoothedRTTMs / 2.0),
+                packetLossRate: lossRate,
+                sequenceGaps: self.totalDetectedGaps,
+                queueDepth: 0,
+                frameDrops: bench.counters.staleDrops + bench.counters.decoderDrops + bench.counters.displayDrops,
+                currentFPS: snap.recvFps > 0 ? snap.recvFps : 60.0
+            )
+            _ = self.adaptiveController.evaluate(metrics: metricsSnapshot)
+            let feedback = AdaptiveFeedbackPayload(
+                rttMs: self.smoothedRTTMs,
+                oneWayTransitMs: max(0.5, self.smoothedRTTMs / 2.0),
+                jitterMs: self.smoothedJitterMs,
+                packetLossRate: lossRate,
+                sequenceGaps: self.totalDetectedGaps,
+                staleDrops: bench.counters.staleDrops,
+                decoderDrops: bench.counters.decoderDrops,
+                displayDrops: bench.counters.displayDrops,
+                receiverFPS: snap.recvFps > 0 ? snap.recvFps : 60.0,
+                currentFrameAgeMs: bench.frameAge.p50,
+                transport: self.currentTransportType.rawValue
+            )
+            conn.send(message: .adaptiveFeedback(feedback))
         }
         timer.resume()
         self.pingTimer = timer

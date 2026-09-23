@@ -18,8 +18,8 @@ public final class MirooServer: @unchecked Sendable {
     public let serviceName: String
     public private(set) var width: Int
     public private(set) var height: Int
-    public let targetFPS: Int
-    public let bitrate: Int
+    public private(set) var targetFPS: Int
+    public private(set) var bitrate: Int
 
     // MARK: - Network Components
     private let queue = DispatchQueue(label: "com.miroo.server.network", qos: .userInteractive)
@@ -54,6 +54,8 @@ public final class MirooServer: @unchecked Sendable {
     public var onScrollEvent: ((ScrollEventPayload) -> Void)?
     public var onRightClick: ((RightClickPayload) -> Void)?
     public var onRequestKeyframe: (() -> Void)?
+    public let adaptiveController = AdaptiveStreamingController()
+    public var onAdaptiveDecision: ((AdaptiveDecision) -> Void)?
 
     public init(
         serviceName: String = Host.current().localizedName ?? "Miroo Mac",
@@ -344,8 +346,34 @@ public final class MirooServer: @unchecked Sendable {
                 try? PipelineBenchmark.shared.exportJSON(toPath: "pipeline_benchmark_report.json", report: report)
             }
 
+        case .adaptiveFeedback:
+            if let feedback = message.decodeAdaptiveFeedback() {
+                handleAdaptiveFeedback(feedback)
+            }
+
         default:
             break
+        }
+    }
+
+    private func handleAdaptiveFeedback(_ feedback: AdaptiveFeedbackPayload) {
+        let snapshot = StreamingMetricsSnapshot(
+            transportType: currentTransportType,
+            rttMs: feedback.rttMs,
+            oneWayTransitMs: feedback.networkTransitMs,
+            packetLossRate: feedback.packetLossRate,
+            sequenceGaps: feedback.sequenceGaps,
+            queueDepth: frameQueue.currentDepth,
+            frameDrops: feedback.staleDrops + feedback.decoderDrops + feedback.displayDrops,
+            currentFPS: feedback.receiverFPS,
+            timestamp: CACurrentMediaTime()
+        )
+        let decision = adaptiveController.evaluate(metrics: snapshot)
+        if decision.targetBitrate != Int32(self.bitrate) || decision.targetFPS != Int32(self.targetFPS) {
+            print("[Miroo Adaptive] State: \(decision.state.rawValue), Bitrate: \(decision.targetBitrate / 1_000_000) Mbps, Target FPS: \(decision.targetFPS) (\(decision.reason))")
+            self.bitrate = Int(decision.targetBitrate)
+            self.targetFPS = Int(decision.targetFPS)
+            onAdaptiveDecision?(decision)
         }
     }
 

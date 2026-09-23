@@ -41,6 +41,9 @@ public final class H264Decoder: @unchecked Sendable {
     public var onKeyframeNeeded: (() -> Void)?
     public var onError: ((Error) -> Void)?
 
+    // Phase 9 Stale Frame Protection Policy
+    public var frameDropPolicy = FrameDropPolicy(maxAcceptableAgeMs: 80.0, maxQueueDepth: 1)
+
     public init() {}
 
     deinit {
@@ -99,6 +102,18 @@ public final class H264Decoder: @unchecked Sendable {
                 }
                 self.hasDecodedFirstKeyframe = true
                 print("[Miroo Decoder] First IDR keyframe received! Commencing decode stream...")
+            }
+
+            // Stale Frame Protection (Phase 9): Discard ancient delta frames to prevent bufferbloat
+            if !parsed.hasKeyframe, let t = timing, t.captureTimestampNs > 0 {
+                let nowNs = UInt64(CACurrentMediaTime() * 1_000_000_000.0)
+                let macCapOnPhoneNs = Int64(t.captureTimestampNs) - PipelineBenchmark.shared.clockOffsetNs
+                let ageMs = Double(max(0, Int64(nowNs) - macCapOnPhoneNs)) / 1_000_000.0
+                if ageMs > 0.05 && self.frameDropPolicy.shouldDrop(frameAgeMs: ageMs, queueDepth: 0, isKeyframe: false) {
+                    PipelineBenchmark.shared.recordDecoderDrop()
+                    self.onKeyframeNeeded?()
+                    return
+                }
             }
 
             // 3. Create CMBlockBuffer wrapping AVCC data

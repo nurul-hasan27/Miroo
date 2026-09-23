@@ -175,6 +175,12 @@ final class MirooMacApp: NSObject, NSApplicationDelegate {
             encoder?.requestKeyframe()
         }
 
+        // Handle dynamic adaptive decisions (bitrate & framerate regulation)
+        server.onAdaptiveDecision = { [weak encoder] decision in
+            encoder?.setBitrate(decision.targetBitrate)
+            encoder?.setTargetFPS(decision.targetFPS)
+        }
+
         // 6. Start ScreenCaptureKit Capture, then start MirooServer
         Task {
             do {
