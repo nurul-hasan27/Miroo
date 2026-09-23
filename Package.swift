@@ -14,7 +14,8 @@ let package = Package(
         .executable(name: "Phase7Tests", targets: ["Phase7Tests"]),
         .executable(name: "Phase8ATests", targets: ["Phase8ATests"]),
         .executable(name: "Phase8BTests", targets: ["Phase8BTests"]),
-        .executable(name: "Phase9Tests", targets: ["Phase9Tests"])
+        .executable(name: "Phase9Tests", targets: ["Phase9Tests"]),
+        .executable(name: "Phase10Tests", targets: ["Phase10Tests"])
     ],
     targets: [
         .target(
@@ -43,7 +44,8 @@ let package = Package(
                 "MirooMetalView.swift",
                 "MacInputController.swift",
                 "USBMuxClient.swift",
-                "AdaptiveStreamingController.swift"
+                "AdaptiveStreamingController.swift",
+                "ConnectionLifecycle.swift"
             ]
         ),
         .executableTarget(
@@ -91,6 +93,7 @@ let package = Package(
                 "Phase8ATests.swift",
                 "Phase8BTests.swift",
                 "Phase9Tests.swift",
+                "Phase10Tests.swift",
                 "main.swift"
             ],
             sources: [
@@ -112,6 +115,7 @@ let package = Package(
                 "Phase8ATests.swift",
                 "Phase8BTests.swift",
                 "Phase9Tests.swift",
+                "Phase10Tests.swift",
                 "main.swift"
             ],
             sources: [
@@ -133,6 +137,7 @@ let package = Package(
                 "Phase8ATests.swift",
                 "Phase8BTests.swift",
                 "Phase9Tests.swift",
+                "Phase10Tests.swift",
                 "main.swift"
             ],
             sources: [
@@ -154,6 +159,7 @@ let package = Package(
                 "Phase7Tests.swift",
                 "Phase8BTests.swift",
                 "Phase9Tests.swift",
+                "Phase10Tests.swift",
                 "main.swift"
             ],
             sources: [
@@ -175,6 +181,7 @@ let package = Package(
                 "Phase7Tests.swift",
                 "Phase8ATests.swift",
                 "Phase9Tests.swift",
+                "Phase10Tests.swift",
                 "main.swift"
             ],
             sources: [
@@ -196,10 +203,33 @@ let package = Package(
                 "Phase7Tests.swift",
                 "Phase8ATests.swift",
                 "Phase8BTests.swift",
+                "Phase10Tests.swift",
                 "main.swift"
             ],
             sources: [
                 "Phase9Tests.swift"
+            ]
+        ),
+        .executableTarget(
+            name: "Phase10Tests",
+            dependencies: [
+                "MirooNetworking"
+            ],
+            path: "Tests",
+            exclude: [
+                "DecodeReconnectionTest",
+                "IntegrationTest",
+                "MovingContentTest.swift",
+                "Phase6ATests.swift",
+                "Phase6BTests.swift",
+                "Phase7Tests.swift",
+                "Phase8ATests.swift",
+                "Phase8BTests.swift",
+                "Phase9Tests.swift",
+                "main.swift"
+            ],
+            sources: [
+                "Phase10Tests.swift"
             ]
         )
     ]
