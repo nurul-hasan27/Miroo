@@ -2,9 +2,9 @@
 //  MirooPhoneApp.swift
 //  MirooPhone
 //
-//  Phase 5 & 6: Ultra-low-latency iPhone Secondary Display Receiver Application.
-//  Push-driven MTKView rendering, zero-copy VideoToolbox H.264 decoding,
-//  and real-time diagnostic latency HUD with microsecond stage breakdown.
+//  Phase 10: Production UX, Connection Lifecycle & Reliability Hardening.
+//  Clean native Apple-style connection UI, automatic Mac discovery,
+//  one-tap "Start Receiving", seamless USB/Wi-Fi fallback, and discrete debug mode.
 //
 
 import SwiftUI
@@ -32,45 +32,57 @@ struct MirooPhoneApp: App {
 
 @MainActor
 final class ReceiverViewModel: ObservableObject {
-    @Published var status: String = "Idle"
+    @Published var lifecycleState: ConnectionLifecycleState = .idle
+    @Published var discoveredHosts: [DiscoveredHost] = []
+    @Published var selectedHost: DiscoveredHost? = nil
     @Published var connectedHost: String? = nil
     @Published var displayDetails: String = "No display connected"
     @Published var streamDetails: String = "No stream active"
     @Published var isStreaming: Bool = false
     @Published var currentOrientation: MirooOrientation = .portrait
-    @Published var showHUD: Bool = true
+    @Published var showDebugHUD: Bool = false
     @Published var diagnostics: FrameDiagnostics = FrameDiagnostics()
     @Published var transportType: String = "TCP"
+    @Published var errorMessage: String? = nil
 
     let receiver = MirooReceiver(clientName: "iPhone Secondary Display")
     let decoder = H264Decoder()
     let renderer: MetalRenderer? = MetalRenderer()
 
-    private var isStarted = false
     private var lastRequestedOrientation: MirooOrientation? = nil
+    private var userStoppedManually: Bool = false
 
     init() {
         setupPipeline()
-        startReceiving()
+        startDiscovery()
+    }
+
+    func startDiscovery() {
+        errorMessage = nil
+        userStoppedManually = false
+        receiver.startDiscovery()
     }
 
     func startReceiving() {
-        guard !isStarted else { return }
-        receiver.start()
-        isStarted = true
-        status = receiver.isUSBActive ? "Miroo Mac Available (USB)" : "Browsing for Miroo Mac..."
+        errorMessage = nil
+        userStoppedManually = false
+        receiver.startReceiving(targetHost: selectedHost)
     }
 
-    func toggleConnection() {
-        if isStarted {
-            receiver.stop()
-            decoder.invalidate()
-            isStarted = false
-            isStreaming = false
-            status = "Disconnected"
-            connectedHost = nil
-        } else {
+    func stopReceiving() {
+        userStoppedManually = true
+        receiver.stopReceiving()
+        decoder.invalidate()
+        isStreaming = false
+        connectedHost = nil
+    }
+
+    func retry() {
+        errorMessage = nil
+        if selectedHost != nil || !discoveredHosts.isEmpty {
             startReceiving()
+        } else {
+            startDiscovery()
         }
     }
 
@@ -113,46 +125,77 @@ final class ReceiverViewModel: ObservableObject {
     }
 
     private func setupPipeline() {
-        // 1. Connection Callbacks
+        // 1. Connection Lifecycle Transitions
+        receiver.onLifecycleChanged = { [weak self] newState in
+            Task { @MainActor in
+                self?.lifecycleState = newState
+                switch newState {
+                case .connected(let host, let transport):
+                    self?.connectedHost = host
+                    self?.transportType = transport.rawValue
+                    self?.isStreaming = true
+                    self?.errorMessage = nil
+                    PipelineBenchmark.shared.activeTransport = transport.rawValue
+
+                    // Sync orientation with Mac if already in landscape
+                    if let cur = self?.currentOrientation, cur != .portrait {
+                        self?.receiver.sendOrientation(cur)
+                    }
+
+                case .connecting(let target, let transport):
+                    self?.transportType = transport.rawValue
+                    self?.connectedHost = target
+
+                case .error(let message):
+                    self?.errorMessage = message
+                    self?.isStreaming = false
+
+                case .disconnected:
+                    self?.isStreaming = false
+                    self?.decoder.invalidate()
+
+                case .reconnecting:
+                    // Keep existing frame buffer or show reconnecting overlay
+                    break
+
+                default:
+                    break
+                }
+            }
+        }
+
+        // 2. Discovered Hosts Update
+        receiver.onDiscoveredHostsUpdated = { [weak self] hosts in
+            Task { @MainActor in
+                guard let self = self else { return }
+                self.discoveredHosts = hosts
+                if self.selectedHost == nil || !hosts.contains(where: { $0.id == self.selectedHost?.id }) {
+                    // Automatically prefer USB if available, otherwise first discovered host
+                    self.selectedHost = hosts.first(where: { $0.isUSB }) ?? hosts.first
+                }
+
+                // Seamless connection to available Mac
+                if let host = self.selectedHost, !self.isStreaming, !self.lifecycleState.isConnecting, !self.userStoppedManually {
+                    print("[Miroo App] Auto-connecting to discovered host: \(host.name)")
+                    self.startReceiving()
+                }
+            }
+        }
+
+        // 3. Backward-compatible Connection Callbacks
         receiver.onConnected = { [weak self] hostName in
             Task { @MainActor in
-                let isUSB = self?.receiver.isUSBActive == true || self?.receiver.currentTransportType == .usb
-                self?.status = isUSB ? "Connected (USB)" : "Connected"
-                if isUSB {
-                    self?.transportType = "USB"
-                    PipelineBenchmark.shared.activeTransport = "USB"
-                }
                 self?.connectedHost = hostName
-                // If device is already in landscape upon connection, sync with Mac
-                if let cur = self?.currentOrientation, cur != .portrait {
-                    print("[Miroo App] Connected while in \(cur.rawValue) -> notifying Mac")
-                    self?.receiver.sendOrientation(cur)
-                }
             }
         }
 
         receiver.onDisconnected = { [weak self] _ in
             Task { @MainActor in
-                self?.status = "Disconnected (Auto-reconnecting...)"
-                self?.connectedHost = nil
-                self?.isStreaming = false
-                self?.decoder.invalidate()
+                self?.sendCancelTouch()
             }
         }
 
-        // Stream config updates (initial or runtime orientation change)
-        receiver.onStreamConfigUpdated = { [weak self] config in
-            Task { @MainActor in
-                self?.streamDetails = "\(config.width)x\(config.height) (\(config.orientation.rawValue)) @ \(config.fps) FPS (\(config.codec)) [\(config.transport)]"
-                self?.transportType = config.transport
-                PipelineBenchmark.shared.activeTransport = config.transport
-                if let orientation = MirooOrientation(rawValue: config.orientation.rawValue) {
-                    self?.currentOrientation = orientation
-                }
-            }
-        }
-
-        // 2. High-performance frame ingestion without per-frame MainActor dispatch
+        // 4. High-performance frame ingestion
         receiver.onFrameReceived = { [weak self] seq, pts, isKeyframe, data, timing, netRecvNs, netTransitMs, jitterMs in
             guard let self = self else { return }
             self.renderer?.currentJitterMs = jitterMs
@@ -177,7 +220,7 @@ final class ReceiverViewModel: ObservableObject {
             )
         }
 
-        // 3. Decoder output -> Metal push queue
+        // 5. Decoder output -> Metal push queue
         decoder.onFrameDecoded = { [weak self] frame in
             guard let self = self else { return }
             self.renderer?.enqueueFrame(frame)
@@ -186,10 +229,7 @@ final class ReceiverViewModel: ObservableObject {
                 Task { @MainActor in
                     self.isStreaming = true
                     let isUSB = self.receiver.isUSBActive || self.receiver.currentTransportType == .usb
-                    self.status = isUSB ? "Streaming (USB)" : "Streaming"
-                    if isUSB {
-                        self.transportType = "USB"
-                    }
+                    self.transportType = isUSB ? "USB" : self.receiver.currentTransportType.rawValue
                     PipelineBenchmark.shared.activeTransport = self.transportType
                     if let info = self.receiver.displayInfo {
                         self.displayDetails = "\(info.name) (\(info.width)x\(info.height))"
@@ -203,12 +243,11 @@ final class ReceiverViewModel: ObservableObject {
             }
         }
 
-        // Request an immediate keyframe over TCP if the hardware decoder encounters a decode error or sequence gap
         decoder.onKeyframeNeeded = { [weak self] in
             self?.receiver.requestKeyframe(reason: "decode_error")
         }
 
-        // 4. Throttled ~4 Hz diagnostic telemetry updates to avoid view invalidation storms
+        // 6. Throttled diagnostic telemetry updates
         renderer?.onDiagnosticsUpdate = { [weak self] diag in
             Task { @MainActor in
                 self?.diagnostics = diag
@@ -217,7 +256,6 @@ final class ReceiverViewModel: ObservableObject {
             }
         }
 
-        // Phase 7: Send periodic live benchmark reports back to Mac server for persistent logging
         renderer?.onBenchmarkReportGenerated = { [weak self] report in
             if let json = report.toJSONString() {
                 self?.receiver.sendBenchmarkReport(json)
@@ -230,6 +268,8 @@ final class ReceiverViewModel: ObservableObject {
 
 struct ReceiverContentView: View {
     @ObservedObject var viewModel: ReceiverViewModel
+    @State private var showControlsOverlay: Bool = true
+    @State private var hideControlsTimer: Timer? = nil
 
     var body: some View {
         GeometryReader { geo in
@@ -238,8 +278,8 @@ struct ReceiverContentView: View {
 
             Group {
                 if viewModel.isStreaming, let renderer = viewModel.renderer {
-                    // Live Metal display with low-latency HUD overlay
-                    ZStack(alignment: .topLeading) {
+                    // Streaming Experience
+                    ZStack(alignment: .top) {
                         Color.black
 
                         MirooMetalView(
@@ -256,14 +296,140 @@ struct ReceiverContentView: View {
                         )
                         .frame(width: geo.size.width, height: geo.size.height)
 
-                        if viewModel.showHUD {
+                        // Reconnection Banner
+                        if viewModel.lifecycleState.isReconnecting {
+                            HStack(spacing: 10) {
+                                ProgressView()
+                                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                    .scaleEffect(0.8)
+                                Text(viewModel.lifecycleState.userFriendlyMessage)
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundColor(.white)
+                                Spacer()
+                                Button("Cancel") {
+                                    viewModel.stopReceiving()
+                                }
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundColor(.yellow)
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 8)
+                            .background(.ultraThinMaterial)
+                            .cornerRadius(20)
+                            .padding(.top, isLandscape ? 12 : 50)
+                            .padding(.horizontal, 24)
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                        }
+
+                        // Top Minimal Floating Pill Bar
+                        if showControlsOverlay {
+                            HStack(spacing: 12) {
+                                // Status Indicator
+                                HStack(spacing: 6) {
+                                    Circle()
+                                        .fill(viewModel.transportType == "USB" ? Color.yellow : Color.green)
+                                        .frame(width: 8, height: 8)
+                                    Text(viewModel.connectedHost ?? "Mac")
+                                        .font(.system(size: 13, weight: .semibold))
+                                        .foregroundColor(.white)
+                                    Text("·")
+                                        .foregroundColor(.white.opacity(0.6))
+                                    Text(viewModel.transportType)
+                                        .font(.system(size: 11, weight: .bold))
+                                        .foregroundColor(viewModel.transportType == "USB" ? .yellow : .green)
+                                }
+
+                                Spacer()
+
+                                // Optional Subtle Telemetry
+                                if viewModel.diagnostics.fps > 0 {
+                                    Text(String(format: "%.0f FPS · %.0f ms", viewModel.diagnostics.fps, viewModel.diagnostics.pipelineMs))
+                                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                        .foregroundColor(.white.opacity(0.75))
+                                }
+
+                                // Debug HUD Toggle
+                                Button(action: {
+                                    withAnimation(.easeInOut(duration: 0.2)) {
+                                        viewModel.showDebugHUD.toggle()
+                                    }
+                                }) {
+                                    Image(systemName: "chart.xyaxis.line")
+                                        .font(.system(size: 13, weight: .semibold))
+                                        .foregroundColor(viewModel.showDebugHUD ? .yellow : .white.opacity(0.8))
+                                        .padding(6)
+                                        .background(Circle().fill(Color.white.opacity(0.15)))
+                                }
+
+                                // Collapse Overlay Button
+                                Button(action: {
+                                    withAnimation(.easeInOut(duration: 0.2)) {
+                                        showControlsOverlay = false
+                                    }
+                                }) {
+                                    Image(systemName: "chevron.compact.up")
+                                        .font(.system(size: 12, weight: .bold))
+                                        .foregroundColor(.white.opacity(0.8))
+                                        .padding(6)
+                                        .background(Circle().fill(Color.white.opacity(0.15)))
+                                }
+
+                                // Stop Receiving Button
+                                Button(action: {
+                                    viewModel.stopReceiving()
+                                }) {
+                                    Image(systemName: "xmark")
+                                        .font(.system(size: 12, weight: .bold))
+                                        .foregroundColor(.white)
+                                        .padding(7)
+                                        .background(Circle().fill(Color.white.opacity(0.2)))
+                                }
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 8)
+                            .background(.ultraThinMaterial)
+                            .cornerRadius(24)
+                            .shadow(color: Color.black.opacity(0.3), radius: 8, x: 0, y: 4)
+                            .padding(.top, isLandscape ? 12 : 50)
+                            .padding(.horizontal, 20)
+                            .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                        } else {
+                            // Discreet Top Handle when collapsed
+                            Button(action: {
+                                withAnimation(.spring()) {
+                                    showControlsOverlay = true
+                                }
+                            }) {
+                                HStack(spacing: 6) {
+                                    Circle()
+                                        .fill(viewModel.transportType == "USB" ? Color.yellow : Color.green)
+                                        .frame(width: 6, height: 6)
+                                    Text(viewModel.connectedHost ?? "Mac")
+                                        .font(.system(size: 11, weight: .semibold))
+                                        .foregroundColor(.white.opacity(0.8))
+                                    Image(systemName: "chevron.compact.down")
+                                        .font(.system(size: 12, weight: .bold))
+                                        .foregroundColor(.white.opacity(0.6))
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 5)
+                                .background(.ultraThinMaterial)
+                                .cornerRadius(14)
+                                .shadow(color: Color.black.opacity(0.3), radius: 4, x: 0, y: 2)
+                            }
+                            .padding(.top, isLandscape ? 8 : 46)
+                            .transition(.opacity)
+                        }
+
+                        // Debug HUD Overlay
+                        if viewModel.showDebugHUD {
                             DiagnosticHUDView(
                                 d: viewModel.diagnostics,
                                 orientation: viewModel.currentOrientation,
                                 transport: viewModel.transportType,
                                 onDismiss: {
                                     withAnimation(.easeInOut(duration: 0.2)) {
-                                        viewModel.showHUD = false
+                                        viewModel.showDebugHUD = false
                                     }
                                 },
                                 onToggleOrientation: {
@@ -271,129 +437,201 @@ struct ReceiverContentView: View {
                                     viewModel.forceOrientation(next)
                                 }
                             )
-                            .padding(.top, isLandscape ? 20 : 48)
+                            .padding(.top, isLandscape ? 56 : 100)
                             .padding(.leading, isLandscape ? 44 : 16)
                             .transition(.opacity)
                         }
-
-                        // Top-Right Control Buttons: HUD Toggle & Disconnect
-                        VStack {
-                            HStack(spacing: 12) {
-                                Spacer()
-                                Button(action: {
-                                    withAnimation(.easeInOut(duration: 0.2)) {
-                                        viewModel.showHUD.toggle()
-                                    }
-                                }) {
-                                    Image(systemName: "chart.xyaxis.line")
-                                        .font(.system(size: 15, weight: .semibold))
-                                        .foregroundColor(.white.opacity(0.85))
-                                        .frame(width: 36, height: 36)
-                                        .background(.ultraThinMaterial)
-                                        .clipShape(Circle())
-                                }
-
-                                Button(action: { viewModel.toggleConnection() }) {
-                                    Image(systemName: "xmark")
-                                        .font(.system(size: 15, weight: .bold))
-                                        .foregroundColor(.white.opacity(0.85))
-                                        .frame(width: 36, height: 36)
-                                        .background(.ultraThinMaterial)
-                                        .clipShape(Circle())
-                                }
-                            }
-                            .padding(.top, isLandscape ? 20 : 48)
-                            .padding(.trailing, isLandscape ? 44 : 16)
-                            Spacer()
-                        }
                     }
                 } else {
-                    // Configuration and connection screen
+                    // Production Connection Screen
                     NavigationStack {
-                        List {
-                            Section("Connection Status") {
-                                HStack {
-                                    Text("Status")
-                                    Spacer()
-                                    Text(viewModel.status)
-                                        .foregroundColor(viewModel.status.contains("Streaming") ? .green : .secondary)
-                                        .bold()
-                                }
-                                if let host = viewModel.connectedHost {
-                                    HStack {
-                                        Text("Host Mac")
-                                        Spacer()
-                                        Text(host).foregroundColor(.primary)
+                        VStack(spacing: 24) {
+                            // Header
+                            VStack(spacing: 6) {
+                                Image(systemName: "display.2")
+                                    .font(.system(size: 54))
+                                    .foregroundColor(.blue)
+                                    .padding(.bottom, 4)
+
+                                Text("Miroo")
+                                    .font(.system(size: 32, weight: .bold))
+
+                                Text("Ultra-Low Latency Secondary Display")
+                                    .font(.subheadline)
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding(.top, 24)
+
+                            // Error Banner
+                            if let error = viewModel.errorMessage {
+                                HStack(spacing: 12) {
+                                    Image(systemName: "exclamationmark.triangle.fill")
+                                        .foregroundColor(.orange)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(error)
+                                            .font(.system(size: 13, weight: .semibold))
+                                            .foregroundColor(.primary)
                                     }
-                                }
-                                HStack {
-                                    Text("Active Orientation")
                                     Spacer()
-                                    Text(viewModel.currentOrientation.rawValue.capitalized)
+                                    Button("Retry") {
+                                        viewModel.retry()
+                                    }
+                                    .font(.system(size: 12, weight: .bold))
+                                    .buttonStyle(.bordered)
+                                }
+                                .padding(12)
+                                .background(Color.orange.opacity(0.12))
+                                .cornerRadius(12)
+                                .padding(.horizontal)
+                            }
+
+                            // Discovered Hosts List
+                            VStack(alignment: .leading, spacing: 10) {
+                                HStack {
+                                    Text("AVAILABLE MACS")
+                                        .font(.caption)
+                                        .fontWeight(.semibold)
                                         .foregroundColor(.secondary)
-                                }
-                                HStack {
-                                    Text("Active Transport")
                                     Spacer()
-                                    Text(viewModel.transportType)
-                                        .bold()
-                                        .foregroundColor(viewModel.transportType == "USB" ? .yellow : (viewModel.transportType == "UDP" ? .cyan : .green))
-                                }
-                            }
-
-                            Section("Display & Stream Config") {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text("Display").font(.caption).foregroundColor(.secondary)
-                                    Text(viewModel.displayDetails).font(.subheadline)
-                                }
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text("Stream").font(.caption).foregroundColor(.secondary)
-                                    Text(viewModel.streamDetails).font(.subheadline)
-                                }
-                            }
-
-                            Section("Performance Telemetry") {
-                                HStack {
-                                    Text("Pipeline Latency")
-                                    Spacer()
-                                    Text(String(format: "%.1f ms", viewModel.diagnostics.pipelineMs)).bold()
-                                }
-                                HStack {
-                                    Text("Framerate")
-                                    Spacer()
-                                    Text(String(format: "%.1f FPS", viewModel.diagnostics.fps)).bold()
-                                }
-                                HStack {
-                                    Text("Frame Jitter")
-                                    Spacer()
-                                    Text(String(format: "%.1f ms", viewModel.diagnostics.jitterMs)).bold()
-                                }
-                                HStack {
-                                    Text("Throughput")
-                                    Spacer()
-                                    Text(String(format: "%.1f Mbps", viewModel.diagnostics.bitrateMbps)).bold()
-                                }
-                            }
-
-                            Section {
-                                Button(action: { viewModel.toggleConnection() }) {
-                                    HStack {
-                                        Spacer()
-                                        Text(viewModel.status.contains("Streaming") || viewModel.status.contains("Connected") ? "Disconnect" : "Start Receiving")
-                                            .bold()
-                                            .foregroundColor(.white)
-                                        Spacer()
+                                    if viewModel.lifecycleState.isSearching {
+                                        ProgressView()
+                                            .scaleEffect(0.7)
                                     }
                                 }
-                                .listRowBackground(Color.blue)
+                                .padding(.horizontal)
+
+                                if viewModel.discoveredHosts.isEmpty {
+                                    VStack(spacing: 12) {
+                                        ProgressView()
+                                            .scaleEffect(1.0)
+                                            .padding(.top, 12)
+                                        Text("Looking for your Mac...")
+                                            .font(.subheadline)
+                                            .foregroundColor(.secondary)
+                                        Text("Ensure Miroo is running on your Mac and connected via USB or Wi-Fi.")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary.opacity(0.8))
+                                            .multilineTextAlignment(.center)
+                                            .padding(.horizontal, 24)
+                                    }
+                                    .frame(maxWidth: .infinity, minHeight: 120)
+                                    .background(Color(uiColor: .secondarySystemGroupedBackground))
+                                    .cornerRadius(16)
+                                    .padding(.horizontal)
+                                } else {
+                                    VStack(spacing: 8) {
+                                        ForEach(viewModel.discoveredHosts) { host in
+                                            Button(action: {
+                                                viewModel.selectedHost = host
+                                            }) {
+                                                HStack(spacing: 14) {
+                                                    Image(systemName: "laptopcomputer")
+                                                        .font(.system(size: 24))
+                                                        .foregroundColor(.blue)
+
+                                                    VStack(alignment: .leading, spacing: 3) {
+                                                        Text(host.name)
+                                                            .font(.system(size: 16, weight: .semibold))
+                                                            .foregroundColor(.primary)
+
+                                                        Text(host.isUSB ? "USB Connected · Ultra-Low Latency" : "Wi-Fi Network")
+                                                            .font(.caption)
+                                                            .foregroundColor(.secondary)
+                                                    }
+
+                                                    Spacer()
+
+                                                    // Badge
+                                                    Text(host.isUSB ? "USB" : "Wi-Fi")
+                                                        .font(.system(size: 11, weight: .bold))
+                                                        .padding(.horizontal, 8)
+                                                        .padding(.vertical, 4)
+                                                        .background(host.isUSB ? Color.yellow.opacity(0.2) : Color.blue.opacity(0.12))
+                                                        .foregroundColor(host.isUSB ? .orange : .blue)
+                                                        .cornerRadius(8)
+
+                                                    if viewModel.selectedHost?.id == host.id {
+                                                        Image(systemName: "checkmark.circle.fill")
+                                                            .foregroundColor(.blue)
+                                                    }
+                                                }
+                                                .padding(14)
+                                                .background(Color(uiColor: .secondarySystemGroupedBackground))
+                                                .cornerRadius(14)
+                                                .overlay(
+                                                    RoundedRectangle(cornerRadius: 14)
+                                                        .stroke(viewModel.selectedHost?.id == host.id ? Color.blue : Color.clear, lineWidth: 2)
+                                                )
+                                            }
+                                            .buttonStyle(.plain)
+                                        }
+                                    }
+                                    .padding(.horizontal)
+                                }
                             }
+
+                            Spacer()
+
+                            // Primary Action Button
+                            VStack(spacing: 12) {
+                                Button(action: {
+                                    viewModel.startReceiving()
+                                }) {
+                                    HStack {
+                                        Spacer()
+                                        if viewModel.lifecycleState.isConnecting {
+                                            ProgressView()
+                                                .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                                .padding(.trailing, 6)
+                                            Text(viewModel.lifecycleState.userFriendlyMessage)
+                                                .font(.headline)
+                                                .foregroundColor(.white)
+                                        } else {
+                                            Text("Start Receiving")
+                                                .font(.headline)
+                                                .foregroundColor(.white)
+                                        }
+                                        Spacer()
+                                    }
+                                    .frame(height: 52)
+                                    .background(viewModel.selectedHost != nil ? Color.blue : Color.gray)
+                                    .cornerRadius(14)
+                                }
+                                .disabled(viewModel.selectedHost == nil || viewModel.lifecycleState.isConnecting)
+
+                                HStack {
+                                    Text("Orientation:")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                    Text(viewModel.currentOrientation.rawValue.capitalized)
+                                        .font(.caption)
+                                        .fontWeight(.semibold)
+                                        .foregroundColor(.primary)
+                                    Spacer()
+                                    Button(action: {
+                                        viewModel.showDebugHUD.toggle()
+                                    }) {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: "wrench.and.screwdriver")
+                                            Text("Debug HUD")
+                                        }
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                    }
+                                }
+                                .padding(.horizontal, 6)
+                            }
+                            .padding(.horizontal)
+                            .padding(.bottom, 20)
                         }
-                        .navigationTitle("Miroo Receiver")
+                        .background(Color(uiColor: .systemGroupedBackground))
+                        .navigationBarHidden(true)
                     }
                 }
             }
             .onAppear {
                 viewModel.updateOrientationIfNeeded(detectedOrientation)
+                resetControlsTimer()
             }
             .onChange(of: geo.size) { newSize in
                 let newOrientation: MirooOrientation = (newSize.width > newSize.height) ? .landscape : .portrait
@@ -401,6 +639,10 @@ struct ReceiverContentView: View {
             }
         }
         .ignoresSafeArea()
+    }
+
+    private func resetControlsTimer() {
+        // Overlay is explicitly controlled via collapse / expand controls
     }
 }
 
@@ -413,123 +655,122 @@ struct DiagnosticHUDView: View {
     let onDismiss: () -> Void
     var onToggleOrientation: (() -> Void)? = nil
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack {
-                Text("MIROO LATENCY")
-                    .font(.system(size: 13, weight: .bold, design: .monospaced))
-                    .foregroundColor(.white)
-                Spacer()
-                Button(action: onDismiss) {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundColor(.white.opacity(0.6))
-                        .font(.system(size: 14))
-                }
-            }
-            .padding(.bottom, 2)
-
-            Divider().background(Color.white.opacity(0.25))
-
-            HStack {
-                Text("Transport")
-                    .font(.system(size: 11, weight: .regular, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.85))
-                Spacer()
-                Text(transport)
-                    .font(.system(size: 11, weight: .bold, design: .monospaced))
-                    .foregroundColor(transport == "USB" ? .yellow : (transport == "UDP" ? .cyan : .green))
-            }
-
-            HStack {
-                Text("Adaptive")
-                    .font(.system(size: 11, weight: .regular, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.85))
-                Spacer()
-                Text(d.adaptiveState)
-                    .font(.system(size: 11, weight: .bold, design: .monospaced))
-                    .foregroundColor(d.adaptiveState == "Stable" ? .green : (d.adaptiveState == "Congested" ? .orange : .yellow))
-            }
-
-            HStack {
-                Text("Mode")
-                    .font(.system(size: 11, weight: .regular, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.85))
-                Spacer()
-                if let onToggle = onToggleOrientation {
-                    Button(action: onToggle) {
-                        HStack(spacing: 3) {
-                            Image(systemName: "arrow.triangle.2.circlepath")
-                                .font(.system(size: 9))
-                            Text(orientation.rawValue.capitalized)
-                                .font(.system(size: 11, weight: .bold, design: .monospaced))
-                        }
-                        .foregroundColor(.cyan)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.white.opacity(0.15))
-                        .cornerRadius(4)
-                    }
-                } else {
-                    Text(orientation.rawValue.capitalized)
-                        .font(.system(size: 11, weight: .bold, design: .monospaced))
-                        .foregroundColor(.white)
-                }
-            }
-
-            hudRow(label: "Capture", value: String(format: "%.1f ms", d.captureMs))
-            hudRow(label: "Encode", value: String(format: "%.1f ms", d.encodeMs))
-            hudRow(label: "Network", value: String(format: "%.1f ms", d.networkMs))
-            hudRow(label: "Decode", value: String(format: "%.1f ms", d.decodeMs))
-            hudRow(label: "Metal", value: String(format: "%.1f ms", d.metalMs))
-            hudRow(label: "Queue", value: String(format: "%.1f ms", d.queueMs))
-
-            Divider().background(Color.white.opacity(0.25))
-
-            hudRow(label: "Glass-to-Render", value: String(format: "%.1f ms", d.pipelineMs), isHighlight: true)
-            if d.p50GlassToRenderMs > 0 {
-                hudRow(label: "G2R p50/95/99", value: String(format: "%.0f/%.0f/%.0f ms", d.p50GlassToRenderMs, d.p95GlassToRenderMs, d.p99GlassToRenderMs))
-                hudRow(label: "Frame Age p50/95", value: String(format: "%.0f/%.0f ms", d.p50FrameAgeMs, d.p95FrameAgeMs))
-            }
-
-            Divider().background(Color.white.opacity(0.25))
-
-            hudRow(label: "FPS (Cur/Tgt)", value: String(format: "%.1f / %.0f", d.fps, d.targetFps))
-            hudRow(label: "Bitrate", value: String(format: "%.1f Mbps", d.bitrateMbps))
-            hudRow(label: "Queue Depth", value: "\(d.queueDepth)")
-            hudRow(label: "Frame Jitter", value: String(format: "%.1f ms", d.jitterMs))
-            hudRow(label: "Drops", value: "\(d.staleDrops + d.displayDrops) (\(String(format: "%.1f%%", d.dropPercentage)))")
-            hudRow(label: "Packet Loss", value: "\(String(format: "%.1f%%", d.packetLossRate * 100)) (\(d.sequenceGaps))")
-            hudRow(label: "Keyframe Reqs", value: "\(d.keyframeRequestCount)")
-
-            if !d.renderRectStr.isEmpty {
-                Divider().background(Color.white.opacity(0.25))
-                hudRow(label: "Screen", value: d.screenPixelsStr)
-                hudRow(label: "Safe Area", value: d.safeAreaInsetsStr)
-                hudRow(label: "Usable", value: d.usableViewportStr)
-                hudRow(label: "Video", value: d.videoSizeStr)
-                hudRow(label: "RenderRect", value: d.renderRectStr)
-            }
+    private var adaptiveStateColor: Color {
+        if d.adaptiveState == "Stable" {
+            return .green
+        } else if d.adaptiveState == "Congested" {
+            return .orange
+        } else {
+            return .yellow
         }
-        .padding(12)
-        .frame(width: 250)
-        .background(Color.black.opacity(0.80))
-        .cornerRadius(12)
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(Color.white.opacity(0.18), lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.5), radius: 8, x: 0, y: 4)
     }
 
-    private func hudRow(label: String, value: String, isHighlight: Bool = false) -> some View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            headerSection
+            Divider().background(Color.white.opacity(0.25))
+            stateSection
+            Divider().background(Color.white.opacity(0.25))
+            stagesSection
+            Divider().background(Color.white.opacity(0.25))
+            totalsSection
+            Divider().background(Color.white.opacity(0.25))
+            metricsSection
+        }
+        .padding(10)
+        .frame(width: 250)
+        .background(Color.black.opacity(0.85))
+        .cornerRadius(10)
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.white.opacity(0.2), lineWidth: 1)
+        )
+    }
+
+    @ViewBuilder
+    private var headerSection: some View {
         HStack {
-            Text(label)
-                .font(.system(size: 11, weight: isHighlight ? .bold : .regular, design: .monospaced))
-                .foregroundColor(isHighlight ? .green : .white.opacity(0.85))
+            Text("MIROO DIAGNOSTICS")
+                .font(.system(size: 13, weight: .bold, design: .monospaced))
+                .foregroundColor(.white)
+            Spacer()
+            Button(action: onDismiss) {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundColor(.white.opacity(0.6))
+                    .font(.system(size: 14))
+            }
+        }
+        .padding(.bottom, 2)
+    }
+
+    @ViewBuilder
+    private var stateSection: some View {
+        metricRow("Transport", value: transport, color: transport == "USB" ? .yellow : (transport == "UDP" ? .cyan : .green))
+        metricRow("Adaptive", value: d.adaptiveState, color: adaptiveStateColor)
+
+        HStack {
+            Text("Mode")
+                .font(.system(size: 11, weight: .regular, design: .monospaced))
+                .foregroundColor(.white.opacity(0.85))
+            Spacer()
+            if let onToggle = onToggleOrientation {
+                Button(action: onToggle) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                            .font(.system(size: 9))
+                        Text(orientation.rawValue.capitalized)
+                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.blue.opacity(0.6))
+                    .foregroundColor(.white)
+                    .cornerRadius(4)
+                }
+            } else {
+                Text(orientation.rawValue.capitalized)
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundColor(.white)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var stagesSection: some View {
+        metricRow("Capture", value: String(format: "%.1f ms", d.captureMs))
+        metricRow("Encode", value: String(format: "%.1f ms", d.encodeMs))
+        metricRow("Network", value: String(format: "%.1f ms", d.networkMs))
+        metricRow("Decode", value: String(format: "%.1f ms", d.decodeMs))
+        metricRow("Metal", value: String(format: "%.1f ms", d.metalMs))
+        metricRow("Queue", value: String(format: "%.1f ms", d.queueMs))
+    }
+
+    @ViewBuilder
+    private var totalsSection: some View {
+        metricRow("Glass-to-Render", value: String(format: "%.1f ms", d.pipelineMs), color: .green)
+        metricRow("G2R p50/95/99", value: "\(Int(d.p50GlassToRenderMs))/\(Int(d.p95GlassToRenderMs))/\(Int(d.p99GlassToRenderMs)) ms")
+        metricRow("Frame Age p50/95", value: "\(Int(d.p50FrameAgeMs))/\(Int(d.p95FrameAgeMs)) ms")
+    }
+
+    @ViewBuilder
+    private var metricsSection: some View {
+        metricRow("FPS (Cur/Tgt)", value: String(format: "%.1f / %.0f", d.fps, d.targetFps))
+        metricRow("Bitrate", value: String(format: "%.1f Mbps", d.bitrateMbps))
+        metricRow("Queue Depth", value: "\(d.queueDepth)")
+        metricRow("Frame Jitter", value: String(format: "%.1f ms", d.jitterMs))
+        metricRow("Loss", value: "\(d.packetLossCount) (\(String(format: "%.1f", d.packetLossRate * 100))%)", color: d.packetLossRate > 0.02 ? .orange : .white)
+        metricRow("Keyframes", value: "\(d.keyframeRequestCount)")
+    }
+
+    private func metricRow(_ title: String, value: String, color: Color = .white) -> some View {
+        HStack {
+            Text(title)
+                .font(.system(size: 11, weight: .regular, design: .monospaced))
+                .foregroundColor(.white.opacity(0.85))
             Spacer()
             Text(value)
                 .font(.system(size: 11, weight: .bold, design: .monospaced))
-                .foregroundColor(isHighlight ? .green : .white)
+                .foregroundColor(color)
         }
     }
 }
