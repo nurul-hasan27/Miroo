@@ -276,9 +276,23 @@ struct ReceiverContentView: View {
             let isLandscape = geo.size.width > geo.size.height
             let detectedOrientation: MirooOrientation = isLandscape ? .landscape : .portrait
 
+            // Dynamic Safe Area Insets (Adaptive across SE, Notch, Dynamic Island, iPad)
+            let topInset = geo.safeAreaInsets.top
+            let leadingInset = geo.safeAreaInsets.leading
+            let trailingInset = geo.safeAreaInsets.trailing
+            let bottomInset = geo.safeAreaInsets.bottom
+
+            // Responsive padding offsets computed from device safe areas
+            let responsiveTopPadding = max(topInset + 4, 12)
+            let responsiveCollapsedTopPadding = max(topInset, 6)
+            let responsiveHorizontalPadding = max(max(leadingInset, trailingInset), 16)
+            let responsiveHUDTopPadding = max(topInset + 48, 56)
+            let responsiveHUDLeadingPadding = max(leadingInset + 8, 16)
+            let isCompactHeight = geo.size.height < 700
+
             Group {
                 if viewModel.isStreaming, let renderer = viewModel.renderer {
-                    // Streaming Experience
+                    // Streaming Experience (True Edge-to-Edge Metal View)
                     ZStack(alignment: .top) {
                         Color.black
 
@@ -296,7 +310,7 @@ struct ReceiverContentView: View {
                         )
                         .frame(width: geo.size.width, height: geo.size.height)
 
-                        // Reconnection Banner
+                        // Reconnection Banner (Dynamically positioned below notch / Dynamic Island)
                         if viewModel.lifecycleState.isReconnecting {
                             HStack(spacing: 10) {
                                 ProgressView()
@@ -316,8 +330,8 @@ struct ReceiverContentView: View {
                             .padding(.vertical, 8)
                             .background(.ultraThinMaterial)
                             .cornerRadius(20)
-                            .padding(.top, isLandscape ? 12 : 50)
-                            .padding(.horizontal, 24)
+                            .padding(.top, responsiveTopPadding)
+                            .padding(.horizontal, responsiveHorizontalPadding)
                             .transition(.move(edge: .top).combined(with: .opacity))
                         }
 
@@ -341,8 +355,8 @@ struct ReceiverContentView: View {
 
                                 Spacer()
 
-                                // Optional Subtle Telemetry
-                                if viewModel.diagnostics.fps > 0 {
+                                // Subtle Telemetry (Adaptive display on screens with sufficient width)
+                                if viewModel.diagnostics.fps > 0 && geo.size.width >= 350 {
                                     Text(String(format: "%.0f FPS · %.0f ms", viewModel.diagnostics.fps, viewModel.diagnostics.pipelineMs))
                                         .font(.system(size: 11, weight: .medium, design: .monospaced))
                                         .foregroundColor(.white.opacity(0.75))
@@ -390,8 +404,8 @@ struct ReceiverContentView: View {
                             .background(.ultraThinMaterial)
                             .cornerRadius(24)
                             .shadow(color: Color.black.opacity(0.3), radius: 8, x: 0, y: 4)
-                            .padding(.top, isLandscape ? 12 : 50)
-                            .padding(.horizontal, 20)
+                            .padding(.top, responsiveTopPadding)
+                            .padding(.horizontal, responsiveHorizontalPadding)
                             .transition(.opacity.combined(with: .scale(scale: 0.95)))
                         } else {
                             // Discreet Top Handle when collapsed
@@ -417,11 +431,11 @@ struct ReceiverContentView: View {
                                 .cornerRadius(14)
                                 .shadow(color: Color.black.opacity(0.3), radius: 4, x: 0, y: 2)
                             }
-                            .padding(.top, isLandscape ? 8 : 46)
+                            .padding(.top, responsiveCollapsedTopPadding)
                             .transition(.opacity)
                         }
 
-                        // Debug HUD Overlay
+                        // Debug HUD Overlay (Adaptive positioning avoiding cutouts)
                         if viewModel.showDebugHUD {
                             DiagnosticHUDView(
                                 d: viewModel.diagnostics,
@@ -437,143 +451,147 @@ struct ReceiverContentView: View {
                                     viewModel.forceOrientation(next)
                                 }
                             )
-                            .padding(.top, isLandscape ? 56 : 100)
-                            .padding(.leading, isLandscape ? 44 : 16)
+                            .frame(maxWidth: min(280, geo.size.width - 32))
+                            .padding(.top, responsiveHUDTopPadding)
+                            .padding(.leading, responsiveHUDLeadingPadding)
                             .transition(.opacity)
                         }
                     }
                 } else {
-                    // Production Connection Screen
+                    // Production Responsive Connection Screen
                     NavigationStack {
-                        VStack(spacing: 24) {
-                            // Header
-                            VStack(spacing: 6) {
-                                Image(systemName: "display.2")
-                                    .font(.system(size: 54))
-                                    .foregroundColor(.blue)
-                                    .padding(.bottom, 4)
+                        VStack(spacing: 0) {
+                            ScrollView(showsIndicators: false) {
+                                VStack(spacing: isCompactHeight ? 16 : 24) {
+                                    // Header
+                                    VStack(spacing: 6) {
+                                        Image(systemName: "display.2")
+                                            .font(.system(size: isCompactHeight ? 38 : 50))
+                                            .foregroundColor(.blue)
+                                            .padding(.bottom, 2)
 
-                                Text("Miroo")
-                                    .font(.system(size: 32, weight: .bold))
+                                        Text("Miroo")
+                                            .font(.system(size: isCompactHeight ? 26 : 32, weight: .bold))
 
-                                Text("Ultra-Low Latency Secondary Display")
-                                    .font(.subheadline)
-                                    .foregroundColor(.secondary)
-                            }
-                            .padding(.top, 24)
-
-                            // Error Banner
-                            if let error = viewModel.errorMessage {
-                                HStack(spacing: 12) {
-                                    Image(systemName: "exclamationmark.triangle.fill")
-                                        .foregroundColor(.orange)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(error)
-                                            .font(.system(size: 13, weight: .semibold))
-                                            .foregroundColor(.primary)
-                                    }
-                                    Spacer()
-                                    Button("Retry") {
-                                        viewModel.retry()
-                                    }
-                                    .font(.system(size: 12, weight: .bold))
-                                    .buttonStyle(.bordered)
-                                }
-                                .padding(12)
-                                .background(Color.orange.opacity(0.12))
-                                .cornerRadius(12)
-                                .padding(.horizontal)
-                            }
-
-                            // Discovered Hosts List
-                            VStack(alignment: .leading, spacing: 10) {
-                                HStack {
-                                    Text("AVAILABLE MACS")
-                                        .font(.caption)
-                                        .fontWeight(.semibold)
-                                        .foregroundColor(.secondary)
-                                    Spacer()
-                                    if viewModel.lifecycleState.isSearching {
-                                        ProgressView()
-                                            .scaleEffect(0.7)
-                                    }
-                                }
-                                .padding(.horizontal)
-
-                                if viewModel.discoveredHosts.isEmpty {
-                                    VStack(spacing: 12) {
-                                        ProgressView()
-                                            .scaleEffect(1.0)
-                                            .padding(.top, 12)
-                                        Text("Looking for your Mac...")
-                                            .font(.subheadline)
+                                        Text("Ultra-Low Latency Secondary Display")
+                                            .font(isCompactHeight ? .caption : .subheadline)
                                             .foregroundColor(.secondary)
-                                        Text("Ensure Miroo is running on your Mac and connected via USB or Wi-Fi.")
-                                            .font(.caption)
-                                            .foregroundColor(.secondary.opacity(0.8))
-                                            .multilineTextAlignment(.center)
-                                            .padding(.horizontal, 24)
                                     }
-                                    .frame(maxWidth: .infinity, minHeight: 120)
-                                    .background(Color(uiColor: .secondarySystemGroupedBackground))
-                                    .cornerRadius(16)
-                                    .padding(.horizontal)
-                                } else {
-                                    VStack(spacing: 8) {
-                                        ForEach(viewModel.discoveredHosts) { host in
-                                            Button(action: {
-                                                viewModel.selectedHost = host
-                                            }) {
-                                                HStack(spacing: 14) {
-                                                    Image(systemName: "laptopcomputer")
-                                                        .font(.system(size: 24))
-                                                        .foregroundColor(.blue)
+                                    .padding(.top, max(topInset, 16))
 
-                                                    VStack(alignment: .leading, spacing: 3) {
-                                                        Text(host.name)
-                                                            .font(.system(size: 16, weight: .semibold))
-                                                            .foregroundColor(.primary)
-
-                                                        Text(host.isUSB ? "USB Connected · Ultra-Low Latency" : "Wi-Fi Network")
-                                                            .font(.caption)
-                                                            .foregroundColor(.secondary)
-                                                    }
-
-                                                    Spacer()
-
-                                                    // Badge
-                                                    Text(host.isUSB ? "USB" : "Wi-Fi")
-                                                        .font(.system(size: 11, weight: .bold))
-                                                        .padding(.horizontal, 8)
-                                                        .padding(.vertical, 4)
-                                                        .background(host.isUSB ? Color.yellow.opacity(0.2) : Color.blue.opacity(0.12))
-                                                        .foregroundColor(host.isUSB ? .orange : .blue)
-                                                        .cornerRadius(8)
-
-                                                    if viewModel.selectedHost?.id == host.id {
-                                                        Image(systemName: "checkmark.circle.fill")
-                                                            .foregroundColor(.blue)
-                                                    }
-                                                }
-                                                .padding(14)
-                                                .background(Color(uiColor: .secondarySystemGroupedBackground))
-                                                .cornerRadius(14)
-                                                .overlay(
-                                                    RoundedRectangle(cornerRadius: 14)
-                                                        .stroke(viewModel.selectedHost?.id == host.id ? Color.blue : Color.clear, lineWidth: 2)
-                                                )
+                                    // Error Banner
+                                    if let error = viewModel.errorMessage {
+                                        HStack(spacing: 12) {
+                                            Image(systemName: "exclamationmark.triangle.fill")
+                                                .foregroundColor(.orange)
+                                            VStack(alignment: .leading, spacing: 2) {
+                                                Text(error)
+                                                    .font(.system(size: 13, weight: .semibold))
+                                                    .foregroundColor(.primary)
                                             }
-                                            .buttonStyle(.plain)
+                                            Spacer()
+                                            Button("Retry") {
+                                                viewModel.retry()
+                                            }
+                                            .font(.system(size: 12, weight: .bold))
+                                            .buttonStyle(.bordered)
+                                        }
+                                        .padding(12)
+                                        .background(Color.orange.opacity(0.12))
+                                        .cornerRadius(12)
+                                        .padding(.horizontal)
+                                    }
+
+                                    // Discovered Hosts List
+                                    VStack(alignment: .leading, spacing: 10) {
+                                        HStack {
+                                            Text("AVAILABLE MACS")
+                                                .font(.caption)
+                                                .fontWeight(.semibold)
+                                                .foregroundColor(.secondary)
+                                            Spacer()
+                                            if viewModel.lifecycleState.isSearching {
+                                                ProgressView()
+                                                    .scaleEffect(0.7)
+                                            }
+                                        }
+                                        .padding(.horizontal)
+
+                                        if viewModel.discoveredHosts.isEmpty {
+                                            VStack(spacing: 10) {
+                                                ProgressView()
+                                                    .scaleEffect(0.9)
+                                                    .padding(.top, 10)
+                                                Text("Looking for your Mac...")
+                                                    .font(.subheadline)
+                                                    .foregroundColor(.secondary)
+                                                Text("Ensure Miroo is running on your Mac and connected via USB or Wi-Fi.")
+                                                    .font(.caption)
+                                                    .foregroundColor(.secondary.opacity(0.8))
+                                                    .multilineTextAlignment(.center)
+                                                    .padding(.horizontal, 20)
+                                            }
+                                            .frame(maxWidth: .infinity, minHeight: isCompactHeight ? 90 : 120)
+                                            .background(Color(uiColor: .secondarySystemGroupedBackground))
+                                            .cornerRadius(16)
+                                            .padding(.horizontal)
+                                        } else {
+                                            VStack(spacing: 8) {
+                                                ForEach(viewModel.discoveredHosts) { host in
+                                                    Button(action: {
+                                                        viewModel.selectedHost = host
+                                                    }) {
+                                                        HStack(spacing: 12) {
+                                                            Image(systemName: "laptopcomputer")
+                                                                .font(.system(size: 22))
+                                                                .foregroundColor(.blue)
+
+                                                            VStack(alignment: .leading, spacing: 2) {
+                                                                Text(host.name)
+                                                                    .font(.system(size: 15, weight: .semibold))
+                                                                    .foregroundColor(.primary)
+
+                                                                Text(host.isUSB ? "USB Connected · Ultra-Low Latency" : "Wi-Fi Network")
+                                                                    .font(.caption2)
+                                                                    .foregroundColor(.secondary)
+                                                            }
+
+                                                            Spacer()
+
+                                                            // Badge
+                                                            Text(host.isUSB ? "USB" : "Wi-Fi")
+                                                                .font(.system(size: 10, weight: .bold))
+                                                                .padding(.horizontal, 8)
+                                                                .padding(.vertical, 3)
+                                                                .background(host.isUSB ? Color.yellow.opacity(0.2) : Color.blue.opacity(0.12))
+                                                                .foregroundColor(host.isUSB ? .orange : .blue)
+                                                                .cornerRadius(6)
+
+                                                            if viewModel.selectedHost?.id == host.id {
+                                                                Image(systemName: "checkmark.circle.fill")
+                                                                    .foregroundColor(.blue)
+                                                            }
+                                                        }
+                                                        .padding(12)
+                                                        .background(Color(uiColor: .secondarySystemGroupedBackground))
+                                                        .cornerRadius(12)
+                                                        .overlay(
+                                                            RoundedRectangle(cornerRadius: 12)
+                                                                .stroke(viewModel.selectedHost?.id == host.id ? Color.blue : Color.clear, lineWidth: 2)
+                                                        )
+                                                    }
+                                                    .buttonStyle(.plain)
+                                                }
+                                            }
+                                            .padding(.horizontal)
                                         }
                                     }
-                                    .padding(.horizontal)
                                 }
+                                .padding(.bottom, 16)
                             }
 
-                            Spacer()
-
-                            // Primary Action Button
-                            VStack(spacing: 12) {
+                            // Primary Action Button (Pinned to Bottom with safe-area spacing)
+                            VStack(spacing: 10) {
                                 Button(action: {
                                     viewModel.startReceiving()
                                 }) {
@@ -593,7 +611,7 @@ struct ReceiverContentView: View {
                                         }
                                         Spacer()
                                     }
-                                    .frame(height: 52)
+                                    .frame(height: 50)
                                     .background(viewModel.selectedHost != nil ? Color.blue : Color.gray)
                                     .cornerRadius(14)
                                 }
@@ -622,7 +640,7 @@ struct ReceiverContentView: View {
                                 .padding(.horizontal, 6)
                             }
                             .padding(.horizontal)
-                            .padding(.bottom, 20)
+                            .padding(.bottom, max(bottomInset, 16))
                         }
                         .background(Color(uiColor: .systemGroupedBackground))
                         .navigationBarHidden(true)
@@ -678,7 +696,7 @@ struct DiagnosticHUDView: View {
             metricsSection
         }
         .padding(10)
-        .frame(width: 250)
+        .frame(maxWidth: 260)
         .background(Color.black.opacity(0.85))
         .cornerRadius(10)
         .overlay(
