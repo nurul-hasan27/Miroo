@@ -63,7 +63,7 @@ let package = Package(
             exclude: [
                 "VirtualDisplay/CGVirtualDisplayBridge.m",
                 "App/MirooMac-Bridging-Header.h",
-                "Resources/Info.plist",
+                "Resources",
                 "Networking"
             ],
             sources: [

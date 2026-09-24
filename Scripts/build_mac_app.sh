@@ -46,6 +46,10 @@ mkdir -p "$RESOURCES_DIR"
 cp "$SPM_BIN_PATH" "$MACOS_DIR/MirooMac"
 chmod +x "$MACOS_DIR/MirooMac"
 
+if [ -f "$ROOT_DIR/MirooMac/Resources/AppIcon.icns" ]; then
+    cp "$ROOT_DIR/MirooMac/Resources/AppIcon.icns" "$RESOURCES_DIR/AppIcon.icns"
+fi
+
 # 3. Write Production Info.plist
 echo "[3/5] Generating Info.plist..."
 cat << 'EOF' > "$CONTENTS_DIR/Info.plist"
@@ -59,6 +63,8 @@ cat << 'EOF' > "$CONTENTS_DIR/Info.plist"
     <string>Miroo</string>
     <key>CFBundleDisplayName</key>
     <string>Miroo</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
