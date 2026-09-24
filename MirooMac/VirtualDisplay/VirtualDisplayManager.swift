@@ -66,6 +66,9 @@ public final class VirtualDisplayManager {
         guard orientation != currentOrientation else { return true }
         guard let b = bridge, b.displayID != 0 else { return false }
 
+        // Persist the current orientation's position before switching
+        DisplayPositionManager.shared.savePosition(for: b.displayID, orientation: currentOrientation)
+
         let targetLogW: UInt32
         let targetLogH: UInt32
         if orientation == .landscape {
@@ -92,10 +95,34 @@ public final class VirtualDisplayManager {
 
     // MARK: - Lifecycle
 
-    public init() {}
+    private var screenParametersObserver: Any?
+
+    public init() {
+        startObservingDisplayChanges()
+    }
 
     deinit {
+        stopObservingDisplayChanges()
         destroy()
+    }
+
+    private func startObservingDisplayChanges() {
+        stopObservingDisplayChanges()
+        screenParametersObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self, let b = self.bridge, b.isValid else { return }
+            DisplayPositionManager.shared.savePosition(for: b.displayID, orientation: self.currentOrientation)
+        }
+    }
+
+    private func stopObservingDisplayChanges() {
+        if let obs = screenParametersObserver {
+            NotificationCenter.default.removeObserver(obs)
+            screenParametersObserver = nil
+        }
     }
 
     // MARK: - Display Creation & Configuration
@@ -156,7 +183,7 @@ public final class VirtualDisplayManager {
         // Allow WindowServer a moment to register the new display in the system list
         RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.5))
 
-        // Step 1: Detach mirror and position beside primary display
+        // Step 1: Detach mirror and restore persistent position or position beside primary
         if !detachFromMirrorAndPositionBesidePrimary() {
             print("[Miroo] WARNING: Failed to configure display arrangement.")
         }
@@ -170,9 +197,12 @@ public final class VirtualDisplayManager {
         return true
     }
 
-    /// Tears down and destroys the virtual display.
+    /// Tears down and destroys the virtual display after persisting position.
     public func destroy() {
         guard isCreated, let b = bridge else { return }
+        if b.displayID != 0 {
+            DisplayPositionManager.shared.savePosition(for: b.displayID, orientation: currentOrientation)
+        }
         print("[Miroo] Destroying virtual display (ID: \(b.displayID))...")
         b.destroy()
         self.bridge = nil
@@ -182,7 +212,7 @@ public final class VirtualDisplayManager {
     // MARK: - Public CoreGraphics Configuration
 
     /// Detaches the virtual display from any mirror sets and positions it
-    /// immediately to the right of the primary display using public CoreGraphics APIs.
+    /// restoring the user's previously chosen layout or docking to primary display.
     @discardableResult
     public func detachFromMirrorAndPositionBesidePrimary() -> Bool {
         guard let bridge = bridge, bridge.displayID != 0 else { return false }
@@ -201,6 +231,7 @@ public final class VirtualDisplayManager {
         // Ensure no other screen is mirroring our virtual display
         var count: UInt32 = 0
         CGGetActiveDisplayList(0, nil, &count)
+        var physicalBounds: [CGRect] = []
         if count > 0 {
             var activeList = [CGDirectDisplayID](repeating: 0, count: Int(count))
             CGGetActiveDisplayList(count, &activeList, &count)
@@ -208,14 +239,29 @@ public final class VirtualDisplayManager {
                 if CGDisplayMirrorsDisplay(otherID) == id {
                     CGConfigureDisplayMirrorOfDisplay(configRef, otherID, kCGNullDirectDisplay)
                 }
+                physicalBounds.append(CGDisplayBounds(otherID))
             }
         }
 
-        // Position to the right of the primary (main) display
         let mainID = CGMainDisplayID()
         let mainBounds = CGDisplayBounds(mainID)
-        let targetX = Int32(mainBounds.origin.x + mainBounds.width)
-        let targetY = Int32(mainBounds.origin.y)
+        if physicalBounds.isEmpty {
+            physicalBounds.append(mainBounds)
+        }
+
+        let currentW = CGFloat(currentOrientation == .landscape ? Self.logicalHeight : Self.logicalWidth)
+        let currentH = CGFloat(currentOrientation == .landscape ? Self.logicalWidth : Self.logicalHeight)
+
+        let targetOrigin = DisplayPositionManager.shared.calculateTargetOrigin(
+            orientation: currentOrientation,
+            virtualWidth: currentW,
+            virtualHeight: currentH,
+            currentMainBounds: mainBounds,
+            activePhysicalDisplayBounds: physicalBounds
+        )
+
+        let targetX = Int32(round(targetOrigin.x))
+        let targetY = Int32(round(targetOrigin.y))
 
         CGConfigureDisplayOrigin(configRef, id, targetX, targetY)
 
@@ -226,6 +272,9 @@ public final class VirtualDisplayManager {
             return false
         }
 
+        // Save active arrangement
+        DisplayPositionManager.shared.savePosition(for: id, orientation: currentOrientation)
+        print("[Miroo] Virtual display positioned at (\(targetX), \(targetY)).")
         return true
     }
 
