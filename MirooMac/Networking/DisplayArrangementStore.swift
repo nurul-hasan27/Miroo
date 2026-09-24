@@ -212,6 +212,15 @@ public final class DisplayArrangementStore: @unchecked Sendable {
         return try? JSONDecoder().decode(DisplayArrangementRelationship.self, from: data)
     }
 
+    /// The last orientation used by Miroo.
+    public var lastSavedOrientation: MirooOrientation? {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard let raw = defaults.string(forKey: Self.lastOrientationKey) else { return nil }
+        return MirooOrientation(rawValue: raw)
+    }
+
     /// Clears any saved arrangements (useful for tests and resetting to defaults).
     public func clearArrangements() {
         lock.lock()

@@ -163,6 +163,7 @@ public final class MirooEngine: ObservableObject {
                 self?.connectedClientName = client
                 self?.updateActiveTransport()
                 self?.statusMessage = "Connected to \(client)"
+                self?.displayManager?.restoreSavedArrangement()
             }
         }
 

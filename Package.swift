@@ -18,7 +18,8 @@ let package = Package(
         .executable(name: "Phase10Tests", targets: ["Phase10Tests"]),
         .executable(name: "Phase11Tests", targets: ["Phase11Tests"]),
         .executable(name: "EdgeToEdgeTests", targets: ["EdgeToEdgeTests"]),
-        .executable(name: "Phase12Tests", targets: ["Phase12Tests"])
+        .executable(name: "Phase12Tests", targets: ["Phase12Tests"]),
+        .executable(name: "DisplayArrangementTests", targets: ["DisplayArrangementTests"])
     ],
     targets: [
         .target(
@@ -92,6 +93,7 @@ let package = Package(
             ],
             path: "Tests",
             exclude: [
+                "DisplayArrangementTests.swift",
                 "DecodeReconnectionTest",
                 "IntegrationTest",
                 "MovingContentTest.swift",
@@ -117,6 +119,7 @@ let package = Package(
             ],
             path: "Tests",
             exclude: [
+                "DisplayArrangementTests.swift",
                 "DecodeReconnectionTest",
                 "IntegrationTest",
                 "MovingContentTest.swift",
@@ -142,6 +145,7 @@ let package = Package(
             ],
             path: "Tests",
             exclude: [
+                "DisplayArrangementTests.swift",
                 "DecodeReconnectionTest",
                 "IntegrationTest",
                 "MovingContentTest.swift",
@@ -167,6 +171,7 @@ let package = Package(
             ],
             path: "Tests",
             exclude: [
+                "DisplayArrangementTests.swift",
                 "DecodeReconnectionTest",
                 "IntegrationTest",
                 "MovingContentTest.swift",
@@ -192,6 +197,7 @@ let package = Package(
             ],
             path: "Tests",
             exclude: [
+                "DisplayArrangementTests.swift",
                 "DecodeReconnectionTest",
                 "IntegrationTest",
                 "MovingContentTest.swift",
@@ -217,6 +223,7 @@ let package = Package(
             ],
             path: "Tests",
             exclude: [
+                "DisplayArrangementTests.swift",
                 "DecodeReconnectionTest",
                 "IntegrationTest",
                 "MovingContentTest.swift",
@@ -242,6 +249,7 @@ let package = Package(
             ],
             path: "Tests",
             exclude: [
+                "DisplayArrangementTests.swift",
                 "DecodeReconnectionTest",
                 "IntegrationTest",
                 "MovingContentTest.swift",
@@ -267,6 +275,7 @@ let package = Package(
             ],
             path: "Tests",
             exclude: [
+                "DisplayArrangementTests.swift",
                 "DecodeReconnectionTest",
                 "IntegrationTest",
                 "MovingContentTest.swift",
@@ -292,6 +301,7 @@ let package = Package(
             ],
             path: "Tests",
             exclude: [
+                "DisplayArrangementTests.swift",
                 "DecodeReconnectionTest",
                 "IntegrationTest",
                 "MovingContentTest.swift",
@@ -329,10 +339,37 @@ let package = Package(
                 "Phase10Tests.swift",
                 "Phase11Tests.swift",
                 "EdgeToEdgeTests.swift",
+                "DisplayArrangementTests.swift",
                 "main.swift"
             ],
             sources: [
                 "Phase12Tests.swift"
+            ]
+        ),
+        .executableTarget(
+            name: "DisplayArrangementTests",
+            dependencies: [
+                "MirooNetworking"
+            ],
+            path: "Tests",
+            exclude: [
+                "DecodeReconnectionTest",
+                "IntegrationTest",
+                "MovingContentTest.swift",
+                "Phase6ATests.swift",
+                "Phase6BTests.swift",
+                "Phase7Tests.swift",
+                "Phase8ATests.swift",
+                "Phase8BTests.swift",
+                "Phase9Tests.swift",
+                "Phase10Tests.swift",
+                "Phase11Tests.swift",
+                "EdgeToEdgeTests.swift",
+                "Phase12Tests.swift",
+                "main.swift"
+            ],
+            sources: [
+                "DisplayArrangementTests.swift"
             ]
         )
     ]
