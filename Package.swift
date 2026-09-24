@@ -48,7 +48,8 @@ let package = Package(
                 "MacInputController.swift",
                 "USBMuxClient.swift",
                 "AdaptiveStreamingController.swift",
-                "ConnectionLifecycle.swift"
+                "ConnectionLifecycle.swift",
+                "DisplayArrangementStore.swift"
             ]
         ),
         .executableTarget(
