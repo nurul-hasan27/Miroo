@@ -17,7 +17,8 @@ let package = Package(
         .executable(name: "Phase9Tests", targets: ["Phase9Tests"]),
         .executable(name: "Phase10Tests", targets: ["Phase10Tests"]),
         .executable(name: "Phase11Tests", targets: ["Phase11Tests"]),
-        .executable(name: "EdgeToEdgeTests", targets: ["EdgeToEdgeTests"])
+        .executable(name: "EdgeToEdgeTests", targets: ["EdgeToEdgeTests"]),
+        .executable(name: "Phase12Tests", targets: ["Phase12Tests"])
     ],
     targets: [
         .target(
@@ -67,6 +68,9 @@ let package = Package(
                 "VirtualDisplay/VirtualDisplayManager.swift",
                 "Capture/DisplayStreamCapturer.swift",
                 "Encoder/VideoEncoder.swift",
+                "App/MirooEngine.swift",
+                "App/MirooSettingsView.swift",
+                "App/MirooMenuBarController.swift",
                 "App/MirooMacApp.swift"
             ]
         ),
@@ -98,7 +102,8 @@ let package = Package(
                 "Phase10Tests.swift",
                 "Phase11Tests.swift",
                 "main.swift",
-                "EdgeToEdgeTests.swift"
+                "EdgeToEdgeTests.swift",
+                "Phase12Tests.swift"
             ],
             sources: [
                 "Phase6ATests.swift"
@@ -122,7 +127,8 @@ let package = Package(
                 "Phase10Tests.swift",
                 "Phase11Tests.swift",
                 "main.swift",
-                "EdgeToEdgeTests.swift"
+                "EdgeToEdgeTests.swift",
+                "Phase12Tests.swift"
             ],
             sources: [
                 "Phase6BTests.swift"
@@ -146,7 +152,8 @@ let package = Package(
                 "Phase10Tests.swift",
                 "Phase11Tests.swift",
                 "main.swift",
-                "EdgeToEdgeTests.swift"
+                "EdgeToEdgeTests.swift",
+                "Phase12Tests.swift"
             ],
             sources: [
                 "Phase7Tests.swift"
@@ -170,7 +177,8 @@ let package = Package(
                 "Phase10Tests.swift",
                 "Phase11Tests.swift",
                 "main.swift",
-                "EdgeToEdgeTests.swift"
+                "EdgeToEdgeTests.swift",
+                "Phase12Tests.swift"
             ],
             sources: [
                 "Phase8ATests.swift"
@@ -194,7 +202,8 @@ let package = Package(
                 "Phase10Tests.swift",
                 "Phase11Tests.swift",
                 "main.swift",
-                "EdgeToEdgeTests.swift"
+                "EdgeToEdgeTests.swift",
+                "Phase12Tests.swift"
             ],
             sources: [
                 "Phase8BTests.swift"
@@ -218,7 +227,8 @@ let package = Package(
                 "Phase10Tests.swift",
                 "Phase11Tests.swift",
                 "main.swift",
-                "EdgeToEdgeTests.swift"
+                "EdgeToEdgeTests.swift",
+                "Phase12Tests.swift"
             ],
             sources: [
                 "Phase9Tests.swift"
@@ -242,7 +252,8 @@ let package = Package(
                 "Phase9Tests.swift",
                 "Phase11Tests.swift",
                 "main.swift",
-                "EdgeToEdgeTests.swift"
+                "EdgeToEdgeTests.swift",
+                "Phase12Tests.swift"
             ],
             sources: [
                 "Phase10Tests.swift"
@@ -266,7 +277,8 @@ let package = Package(
                 "Phase9Tests.swift",
                 "Phase10Tests.swift",
                 "main.swift",
-                "EdgeToEdgeTests.swift"
+                "EdgeToEdgeTests.swift",
+                "Phase12Tests.swift"
             ],
             sources: [
                 "Phase11Tests.swift"
@@ -290,10 +302,36 @@ let package = Package(
                 "Phase9Tests.swift",
                 "Phase10Tests.swift",
                 "Phase11Tests.swift",
+                "Phase12Tests.swift",
                 "main.swift"
             ],
             sources: [
                 "EdgeToEdgeTests.swift"
+            ]
+        ),
+        .executableTarget(
+            name: "Phase12Tests",
+            dependencies: [
+                "MirooNetworking"
+            ],
+            path: "Tests",
+            exclude: [
+                "DecodeReconnectionTest",
+                "IntegrationTest",
+                "MovingContentTest.swift",
+                "Phase6ATests.swift",
+                "Phase6BTests.swift",
+                "Phase7Tests.swift",
+                "Phase8ATests.swift",
+                "Phase8BTests.swift",
+                "Phase9Tests.swift",
+                "Phase10Tests.swift",
+                "Phase11Tests.swift",
+                "EdgeToEdgeTests.swift",
+                "main.swift"
+            ],
+            sources: [
+                "Phase12Tests.swift"
             ]
         )
     ]
