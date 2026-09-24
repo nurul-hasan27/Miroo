@@ -49,7 +49,11 @@ public final class MirooEngine: ObservableObject {
         didSet { applyTargetBitrate(targetBitrateMbps) }
     }
     @Published public var preferredTransport: String = "auto" {
-        didSet { applyPreferredTransport(preferredTransport) }
+        didSet { applyTransportMode(preferredTransport) }
+    }
+    @Published public private(set) var isUSBAvailable: Bool = false
+    @Published public var selectedTransportMode: String = "auto" {
+        didSet { applyTransportMode(selectedTransportMode) }
     }
     @Published public var launchAtLogin: Bool = false {
         didSet { setLaunchAtLogin(launchAtLogin) }
@@ -173,6 +177,26 @@ public final class MirooEngine: ObservableObject {
             }
         }
 
+        server.onUSBDeviceAvailabilityChanged = { [weak self] available in
+            Task { @MainActor in
+                guard let self = self else { return }
+                self.isUSBAvailable = available
+                if self.selectedTransportMode == "auto" && available {
+                    self.server?.attemptUSBConnectionIfAvailable()
+                } else if self.selectedTransportMode == "usb" && !available {
+                    print("[MirooEngine] USB detached while in USB mode. Gracefully transitioning to auto fallback...")
+                    self.selectedTransportMode = "auto"
+                }
+                self.updateActiveTransport()
+            }
+        }
+
+        server.onPreTransportSwitch = { [weak self] in
+            Task { @MainActor in
+                self?.inputController?.releaseAllButtons()
+            }
+        }
+
         // 4. Initialize Hardware VideoEncoder
         let encoder = VideoEncoder(
             width: Int32(targetWidth),
@@ -247,6 +271,7 @@ public final class MirooEngine: ObservableObject {
 
         statusMessage = "Starting network server..."
         try server.start()
+        self.isUSBAvailable = server.isUSBAvailable
 
         // 7. Setup system sleep/wake notifications
         setupSleepWakeObservers()
@@ -377,26 +402,67 @@ public final class MirooEngine: ObservableObject {
         encoder?.setBitrate(Int32(mbps * 1_000_000))
     }
 
-    private func applyPreferredTransport(_ pref: String) {
-        guard let server = server else { return }
-        if pref == "udp" {
-            server.setVideoTransportType(.udp)
-        } else if pref == "tcp" {
-            server.setVideoTransportType(.tcp)
-        }
-        updateActiveTransport()
+    public func selectTransportMode(_ mode: String) {
+        let normalized = mode.lowercased()
+        guard selectedTransportMode != normalized else { return }
+        selectedTransportMode = normalized
     }
 
-    private func updateActiveTransport() {
+    private func applyTransportMode(_ mode: String) {
+        let normalized = mode.lowercased()
+        // If selecting USB, ensure USB is physically available
+        if normalized == "usb" && !isUSBAvailable {
+            print("[MirooEngine] Cannot switch to USB: No USB connection available.")
+            return
+        }
+
+        inputController?.releaseAllButtons()
+        server?.selectedTransportMode = normalized
+
+        guard let server = server else {
+            updateActiveTransport()
+            return
+        }
+
+        switch normalized {
+        case "usb":
+            if server.isUSBActive {
+                server.setVideoTransportType(.usb)
+            } else if let devID = server.usbmuxAttachedDeviceID {
+                server.connectUSBNow(deviceID: devID)
+            } else {
+                server.setVideoTransportType(.usb)
+            }
+        case "udp":
+            server.setVideoTransportType(.udp)
+        case "tcp":
+            server.setVideoTransportType(.tcp)
+        case "auto":
+            if server.isUSBAvailable {
+                if server.isUSBActive {
+                    server.setVideoTransportType(.usb)
+                } else if let devID = server.usbmuxAttachedDeviceID {
+                    server.connectUSBNow(deviceID: devID)
+                } else {
+                    server.setVideoTransportType(.usb)
+                }
+            } else {
+                server.setVideoTransportType(.udp)
+            }
+        default:
+            break
+        }
+
+        updateActiveTransport()
+        encoder?.requestKeyframe()
+    }
+
+    public func updateActiveTransport() {
         guard let server = server else {
             activeTransport = "None"
             return
         }
-        if server.isUSBActive {
-            activeTransport = "USB"
-        } else {
-            activeTransport = server.currentTransportType.rawValue.uppercased()
-        }
+        activeTransport = server.currentTransportType.rawValue.uppercased()
     }
 
     // MARK: - Launch at Login (SMAppService)

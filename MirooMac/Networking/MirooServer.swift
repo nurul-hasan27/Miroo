@@ -10,6 +10,7 @@ import Foundation
 import Network
 import CoreMedia
 import QuartzCore
+import Darwin
 
 public final class MirooServer: @unchecked Sendable {
 
@@ -39,11 +40,14 @@ public final class MirooServer: @unchecked Sendable {
     public var udpPort: UInt16 = 51042
     public private(set) var udpSessionToken: UInt32 = UInt32.random(in: 100000...999999)
 
-    // USB Transport (Phase 8B)
+    // USB Transport (Phase 8B & Phase 13)
     private let usbmuxClient = USBMuxClient()
     private var usbRetryTimer: DispatchSourceTimer?
     private var isConnectingUSB: Bool = false
     public private(set) var isUSBActive: Bool = false
+    public var isUSBAvailable: Bool { usbmuxClient.isUSBAvailable }
+    public var usbmuxAttachedDeviceID: UInt32? { usbmuxClient.attachedDevices.keys.first }
+    public var selectedTransportMode: String = "auto"
 
     // Lifecycle Callbacks
     public var onClientConnected: ((String) -> Void)?
@@ -54,6 +58,8 @@ public final class MirooServer: @unchecked Sendable {
     public var onScrollEvent: ((ScrollEventPayload) -> Void)?
     public var onRightClick: ((RightClickPayload) -> Void)?
     public var onRequestKeyframe: (() -> Void)?
+    public var onUSBDeviceAvailabilityChanged: ((Bool) -> Void)?
+    public var onPreTransportSwitch: (() -> Void)?
     public let adaptiveController = AdaptiveStreamingController()
     public var onAdaptiveDecision: ((AdaptiveDecision) -> Void)?
 
@@ -240,8 +246,9 @@ public final class MirooServer: @unchecked Sendable {
     }
 
     private func getResolvedServerHost() -> String? {
-        guard let conn = activeConnection else { return nil }
-        if let local = conn.connection.currentPath?.localEndpoint, case .hostPort(let h, _) = local {
+        if let conn = activeConnection,
+           let local = conn.connection.currentPath?.localEndpoint,
+           case .hostPort(let h, _) = local {
             switch h {
             case .ipv4(let ip):
                 return "\(ip)"
@@ -251,7 +258,35 @@ public final class MirooServer: @unchecked Sendable {
                 break
             }
         }
-        return nil
+        return getLocalNetworkIP()
+    }
+
+    private func getLocalNetworkIP() -> String? {
+        var address: String?
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddr) == 0, let firstAddr = ifaddr else { return nil }
+        defer { freeifaddrs(ifaddr) }
+
+        for ptr in sequence(first: firstAddr, next: { $0.pointee.ifa_next }) {
+            let flags = Int32(ptr.pointee.ifa_flags)
+            let addr = ptr.pointee.ifa_addr.pointee
+
+            if (flags & (IFF_UP | IFF_RUNNING | IFF_LOOPBACK)) == (IFF_UP | IFF_RUNNING),
+               addr.sa_family == UInt8(AF_INET) {
+                var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                if getnameinfo(ptr.pointee.ifa_addr, socklen_t(addr.sa_len),
+                               &hostname, socklen_t(hostname.count),
+                               nil, 0, NI_NUMERICHOST) == 0 {
+                    let ipStr = String(cString: hostname)
+                    let name = String(cString: ptr.pointee.ifa_name)
+                    if name == "en0" {
+                        return ipStr
+                    }
+                    address = ipStr
+                }
+            }
+        }
+        return address
     }
 
     private func handleMessage(_ message: MirooMessage, from conn: MirooConnection) {
@@ -398,15 +433,28 @@ public final class MirooServer: @unchecked Sendable {
         conn.send(message: streamMsg)
     }
 
-    /// Dynamically switches video streaming transport between TCP and UDP at runtime.
+    /// Dynamically switches video streaming transport between TCP, UDP, and USB at runtime.
     public func setVideoTransportType(_ type: VideoTransportType) {
         queue.async { [weak self] in
             guard let self = self else { return }
             guard self.currentTransportType != type else { return }
             print("[Miroo Server] Switching video transport from \(self.currentTransportType) to \(type)...")
-            self.currentTransportType = type
-            self.activeVideoTransport?.stop()
 
+            // 1. Safety: Inform pre-switch handler (e.g. release mouse buttons / gesture tracking)
+            self.onPreTransportSwitch?()
+
+            // 2. Stop and release previous transport cleanly
+            self.activeVideoTransport?.stop()
+            self.activeVideoTransport = nil
+
+            // 3. Safety: Flush frame queue to prevent stale frames from old transport
+            self.frameQueue.clear()
+            self.isSending = false
+
+            // 4. Update transport state
+            self.currentTransportType = type
+
+            // 5. Instantiate and start new sender transport
             if type == .udp {
                 let udpSender = UDPVideoSenderTransport(port: self.udpPort, sessionToken: self.udpSessionToken)
                 self.activeVideoTransport = udpSender
@@ -421,7 +469,7 @@ public final class MirooServer: @unchecked Sendable {
                 tcpSender.start()
             }
 
-            // Inform client of transport change over reliable TCP control channel
+            // 6. Inform client of transport change over reliable control channel
             if let conn = self.activeConnection, conn.state == .streaming || conn.state == .connected {
                 let setMsg = MirooMessage.setTransport(
                     transport: type.rawValue,
@@ -430,6 +478,9 @@ public final class MirooServer: @unchecked Sendable {
                     serverHost: self.getResolvedServerHost()
                 )
                 conn.send(message: setMsg)
+
+                // 7. Request immediate IDR keyframe for instant decoder sync
+                self.frameQueue.requestImmediateKeyframe()
                 self.onRequestKeyframe?()
             }
         }
@@ -559,6 +610,9 @@ public final class MirooServer: @unchecked Sendable {
         usbmuxClient.onDeviceDetached = { [weak self] deviceID in
             self?.handleUSBDeviceDetached(deviceID)
         }
+        usbmuxClient.onAvailabilityChanged = { [weak self] available in
+            self?.onUSBDeviceAvailabilityChanged?(available)
+        }
         usbmuxClient.startMonitoring()
     }
 
@@ -571,7 +625,10 @@ public final class MirooServer: @unchecked Sendable {
         queue.async { [weak self] in
             guard let self = self else { return }
             print("[Miroo Server] USB device attached: ID=\(device.deviceID), Serial=\(device.serialNumber)")
-            self.attemptUSBConnection(deviceID: device.deviceID)
+            self.onUSBDeviceAvailabilityChanged?(true)
+            if self.selectedTransportMode == "auto" || self.selectedTransportMode == "usb" {
+                self.attemptUSBConnection(deviceID: device.deviceID)
+            }
         }
     }
 
@@ -580,8 +637,11 @@ public final class MirooServer: @unchecked Sendable {
             guard let self = self else { return }
             print("[Miroo Server] USB device detached: ID=\(deviceID)")
             self.stopUSBRetryTimer()
+            let stillAvailable = !self.usbmuxClient.attachedDevices.isEmpty
+            self.onUSBDeviceAvailabilityChanged?(stillAvailable)
             if self.isUSBActive {
                 print("[Miroo Server] Active USB connection detached -> disconnecting cleanly")
+                self.onPreTransportSwitch?()
                 self.isUSBActive = false
                 self.activeConnection?.disconnect()
                 self.activeConnection = nil
@@ -590,6 +650,21 @@ public final class MirooServer: @unchecked Sendable {
                 self.frameQueue.clear()
                 self.isSending = false
                 self.onClientDisconnected?()
+            }
+        }
+    }
+
+    public func connectUSBNow(deviceID: UInt32) {
+        queue.async { [weak self] in
+            self?.attemptUSBConnection(deviceID: deviceID)
+        }
+    }
+
+    public func attemptUSBConnectionIfAvailable() {
+        queue.async { [weak self] in
+            guard let self = self else { return }
+            if let devID = self.usbmuxClient.attachedDevices.keys.first {
+                self.attemptUSBConnection(deviceID: devID)
             }
         }
     }

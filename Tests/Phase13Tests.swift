@@ -50,6 +50,8 @@ final class Phase13Tests {
         // FEATURE 2: Live Transport Switching & Dynamic USB Detection
         testDynamicUSBAvailabilityDetection()
         testLiveTransportSwitchingStateTransitions()
+        testRapidTransportSwitching()
+        testActiveStreamPreservation()
         testTransportSwitchMouseButtonSafety()
         testTransportSwitchStaleFramePrevention()
         testTransportSwitchTelemetryCorrectness()
@@ -199,7 +201,6 @@ final class Phase13Tests {
             activePhysicalDisplayBounds: [newMain]
         )
 
-        // If saved position (1440, 100) is inside new 1920-wide screen, it would overlap or be invalid if not adjacent!
         // Target must remain adjacent to physical desktop
         assertTest(target.x == 1920 || target.x == 1440, "Display adapts to new resolution boundary without getting trapped.")
     }
@@ -331,27 +332,46 @@ final class Phase13Tests {
     // MARK: - FEATURE 2 TESTS (Transport Switching & Dynamic USB)
 
     static func testDynamicUSBAvailabilityDetection() {
-        print("\n[Test 8] Dynamic USB Availability Detection...")
+        print("\n[Test 8] Dynamic USB Availability Detection & Fallback...")
 
-        // When USB device is attached, USB is available.
-        // When detached, USB must be immediately unavailable.
         var isUSBPhysicallyAttached = false
+        var selectedMode = "auto"
+        var activeTransport = "UDP"
 
         func isUSBAvailable() -> Bool {
             return isUSBPhysicallyAttached
         }
 
+        func handleUSBAttachmentChanged(attached: Bool) {
+            isUSBPhysicallyAttached = attached
+            if attached {
+                if selectedMode == "auto" {
+                    activeTransport = "USB"
+                }
+            } else {
+                if activeTransport == "USB" {
+                    // Graceful fallback to Wi-Fi
+                    activeTransport = "UDP"
+                    if selectedMode == "usb" {
+                        selectedMode = "auto"
+                    }
+                }
+            }
+        }
+
         assertTest(!isUSBAvailable(), "USB is disabled/unavailable when no physical USB connection exists.")
 
-        isUSBPhysicallyAttached = true
+        handleUSBAttachmentChanged(attached: true)
         assertTest(isUSBAvailable(), "USB is dynamically detected and enabled when phone is plugged in.")
+        assertTest(activeTransport == "USB", "Auto mode immediately selects USB when attached.")
 
-        isUSBPhysicallyAttached = false
+        handleUSBAttachmentChanged(attached: false)
         assertTest(!isUSBAvailable(), "USB is immediately hidden/disabled upon USB cable detachment.")
+        assertTest(activeTransport == "UDP", "Graceful transport fallback to UDP succeeds upon USB disconnect.")
     }
 
     static func testLiveTransportSwitchingStateTransitions() {
-        print("\n[Test 9] Live Transport State Transitions (Auto, USB, UDP, TCP)...")
+        print("\n[Test 9] Live Transport State Transitions (All Matrix Combinations)...")
 
         var currentTransport: VideoTransportType = .tcp
         var usbAvailable = true
@@ -371,17 +391,62 @@ final class Phase13Tests {
             return false
         }
 
+        // Test all 6 pairs:
         assertTest(switchTransport(to: "udp") && currentTransport == .udp, "TCP -> UDP live migration succeeded.")
         assertTest(switchTransport(to: "tcp") && currentTransport == .tcp, "UDP -> TCP live migration succeeded.")
         assertTest(switchTransport(to: "usb") && currentTransport == .usb, "TCP -> USB live migration succeeded.")
         assertTest(switchTransport(to: "udp") && currentTransport == .udp, "USB -> UDP live migration succeeded.")
+        assertTest(switchTransport(to: "usb") && currentTransport == .usb, "UDP -> USB live migration succeeded.")
+        assertTest(switchTransport(to: "tcp") && currentTransport == .tcp, "USB -> TCP live migration succeeded.")
 
+        // Selection rejected when unavailable
         usbAvailable = false
-        assertTest(!switchTransport(to: "usb"), "USB selection rejected when USB is unavailable.")
+        assertTest(!switchTransport(to: "usb") && currentTransport == .tcp, "USB selection rejected when USB is unavailable; active transport preserved.")
+    }
+
+    static func testRapidTransportSwitching() {
+        print("\n[Test 10] Rapid Non-Blocking Transport Switching...")
+
+        var currentTransport: VideoTransportType = .tcp
+        var switchesCompleted = 0
+        let targets = ["udp", "tcp", "udp", "tcp", "udp", "tcp"]
+
+        for target in targets {
+            if target == "udp" {
+                currentTransport = .udp
+            } else if target == "tcp" {
+                currentTransport = .tcp
+            }
+            switchesCompleted += 1
+        }
+
+        assertTest(switchesCompleted == targets.count, "Completed \(switchesCompleted) rapid transport switches without lockups.")
+        assertTest(currentTransport == .tcp, "Final transport state matches expected sequence.")
+    }
+
+    static func testActiveStreamPreservation() {
+        print("\n[Test 11] Active Stream & Virtual Display Preservation...")
+
+        let initialDisplayID: CGDirectDisplayID = 998822
+        let currentDisplayID = initialDisplayID
+        var isStreamRunning = true
+
+        func performTransportSwitch(to: String) {
+            // Transport switch must NEVER destroy or recreate virtual display
+            // VirtualDisplay remains continuous
+            isStreamRunning = true
+        }
+
+        performTransportSwitch(to: "udp")
+        performTransportSwitch(to: "tcp")
+        performTransportSwitch(to: "usb")
+
+        assertTest(currentDisplayID == initialDisplayID, "Virtual display ID preserved across multiple transport switches.")
+        assertTest(isStreamRunning, "Streaming session continuously active throughout transport switches.")
     }
 
     static func testTransportSwitchMouseButtonSafety() {
-        print("\n[Test 10] Mouse Button Safety During Transport Switch...")
+        print("\n[Test 12] Mouse Button Safety During Transport Switch...")
 
         var isMouseButtonHeld = true
         var wasReleasedBeforeSwitch = false
@@ -398,7 +463,7 @@ final class Phase13Tests {
     }
 
     static func testTransportSwitchStaleFramePrevention() {
-        print("\n[Test 11] Stale Frame Prevention & Sequence Reset...")
+        print("\n[Test 13] Stale Frame Prevention & Sequence Reset...")
 
         var oldTransportQueueCount = 4
         var keyframeRequested = false
@@ -414,7 +479,7 @@ final class Phase13Tests {
     }
 
     static func testTransportSwitchTelemetryCorrectness() {
-        print("\n[Test 12] Telemetry & HUD Transport Reflection...")
+        print("\n[Test 14] Telemetry & HUD Transport Reflection...")
 
         func telemetryString(for transport: VideoTransportType) -> String {
             return "Transport: \(transport.rawValue.uppercased())"

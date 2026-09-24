@@ -109,11 +109,21 @@ final class MirooMacApp: NSObject, NSApplicationDelegate {
                         let next: MirooOrientation = (engine.currentOrientation == .portrait) ? .landscape : .portrait
                         await engine.switchOrientation(to: next)
                     } else if line == "u" || line == "udp" {
-                        engine.preferredTransport = "udp"
-                        print("[Miroo] Switched preferred transport to UDP.")
+                        engine.selectTransportMode("udp")
+                        print("[Miroo] Switched transport to UDP.")
                     } else if line == "t" || line == "tcp" {
-                        engine.preferredTransport = "tcp"
-                        print("[Miroo] Switched preferred transport to TCP.")
+                        engine.selectTransportMode("tcp")
+                        print("[Miroo] Switched transport to TCP.")
+                    } else if line == "s" || line == "usb" {
+                        if engine.isUSBAvailable {
+                            engine.selectTransportMode("usb")
+                            print("[Miroo] Switched transport to USB.")
+                        } else {
+                            print("[Miroo] USB unavailable: Device is not physically connected.")
+                        }
+                    } else if line == "a" || line == "auto" {
+                        engine.selectTransportMode("auto")
+                        print("[Miroo] Switched transport to Auto.")
                     } else if line == "k" || line == "key" {
                         engine.requestKeyframe()
                         print("[Miroo] Forced IDR Keyframe on next capture.")

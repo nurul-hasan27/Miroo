@@ -100,10 +100,13 @@ public struct MirooSettingsView: View {
                     Text("16 Mbps (Maximum)").tag(16)
                 }
 
-                Picker("Preferred Transport:", selection: $engine.preferredTransport) {
+                Picker("Active Transport:", selection: $engine.selectedTransportMode) {
                     Text("Auto (USB First, Wi-Fi Fallback)").tag("auto")
-                    Text("Wi-Fi UDP").tag("udp")
-                    Text("Wi-Fi TCP").tag("tcp")
+                    if engine.isUSBAvailable {
+                        Text("Direct USB (Ultra Low Latency)").tag("usb")
+                    }
+                    Text("Wi-Fi UDP (Low Latency)").tag("udp")
+                    Text("Wi-Fi TCP (Reliable)").tag("tcp")
                 }
             }
 

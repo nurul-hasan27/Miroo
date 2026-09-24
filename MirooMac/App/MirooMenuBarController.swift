@@ -120,7 +120,45 @@ public final class MirooMenuBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
-        // 5. Settings & Diagnostics
+        // 5. Transport Selector (Auto / USB / UDP / TCP)
+        let transportMenu = NSMenu()
+
+        let autoItem = NSMenuItem(title: "Auto (Optimal Transport)", action: #selector(selectTransportAutoAction), keyEquivalent: "")
+        autoItem.target = self
+        autoItem.state = (engine.selectedTransportMode == "auto") ? .on : .off
+        transportMenu.addItem(autoItem)
+
+        transportMenu.addItem(NSMenuItem.separator())
+
+        // USB: Dynamic availability — only shown when USB cable is physically connected!
+        if engine.isUSBAvailable {
+            let usbItem = NSMenuItem(title: "USB (Ultra Low Latency)", action: #selector(selectTransportUSBAction), keyEquivalent: "")
+            usbItem.target = self
+            let isUSBActive = (engine.selectedTransportMode == "usb" || (engine.selectedTransportMode == "auto" && engine.activeTransport == "USB"))
+            usbItem.state = isUSBActive ? .on : .off
+            transportMenu.addItem(usbItem)
+        }
+
+        let udpItem = NSMenuItem(title: "UDP (Low-Latency Wi-Fi)", action: #selector(selectTransportUDPAction), keyEquivalent: "")
+        udpItem.target = self
+        let isUDPActive = (engine.selectedTransportMode == "udp" || (engine.selectedTransportMode == "auto" && engine.activeTransport == "UDP" && !engine.isUSBAvailable))
+        udpItem.state = isUDPActive ? .on : .off
+        transportMenu.addItem(udpItem)
+
+        let tcpItem = NSMenuItem(title: "TCP (Reliable Wi-Fi)", action: #selector(selectTransportTCPAction), keyEquivalent: "")
+        tcpItem.target = self
+        let isTCPActive = (engine.selectedTransportMode == "tcp" || (engine.selectedTransportMode == "auto" && engine.activeTransport == "TCP" && !engine.isUSBAvailable))
+        tcpItem.state = isTCPActive ? .on : .off
+        transportMenu.addItem(tcpItem)
+
+        let transportTitle = (engine.activeTransport != "None") ? "Transport: \(engine.activeTransport)" : "Transport"
+        let transportParentItem = NSMenuItem(title: transportTitle, action: nil, keyEquivalent: "")
+        transportParentItem.submenu = transportMenu
+        menu.addItem(transportParentItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        // 6. Settings & Diagnostics
         let settingsItem = NSMenuItem(
             title: "Settings...",
             action: #selector(openSettingsAction),
@@ -139,7 +177,7 @@ public final class MirooMenuBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
-        // 6. Quit
+        // 7. Quit
         let quitItem = NSMenuItem(
             title: "Quit Miroo",
             action: #selector(quitAction),
@@ -150,6 +188,22 @@ public final class MirooMenuBarController: NSObject, NSMenuDelegate {
     }
 
     // MARK: - Actions
+
+    @objc private func selectTransportAutoAction() {
+        engine.selectTransportMode("auto")
+    }
+
+    @objc private func selectTransportUSBAction() {
+        engine.selectTransportMode("usb")
+    }
+
+    @objc private func selectTransportUDPAction() {
+        engine.selectTransportMode("udp")
+    }
+
+    @objc private func selectTransportTCPAction() {
+        engine.selectTransportMode("tcp")
+    }
 
     @objc private func togglePauseAction() {
         engine.togglePause()
