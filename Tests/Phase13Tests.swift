@@ -49,6 +49,7 @@ final class Phase13Tests {
         testDisplaySessionInputSafetyAndWiFiHostIntegrity()
         testReadinessDiagnosticStateMachine()
         testPhysicalReconnectAndCleanupHandling()
+        testEndToEndReadinessPipelineIntegration()
 
         print("==================================================================")
         print("Phase 13 Verification Results: \(testsPassed) Passed, \(testsFailed) Failed")
@@ -659,5 +660,74 @@ final class Phase13Tests {
         session2.stop(reason: .userDisconnected)
         activeSessions.removeValue(forKey: dev.id)
         assertTest(activeSessions.isEmpty, "Active sessions cleanly empty after teardown")
+    }
+
+    // MARK: - Test 14: End-to-End Readiness Pipeline Integration Suite
+    static func testEndToEndReadinessPipelineIntegration() {
+        print("\n[Test 14] End-to-End Readiness Pipeline Integration Suite...")
+
+        let authorizer = ConnectionAuthorizer.shared
+        let clientID = "integration-client-14"
+        let sessionID = "pipeline-int-session-14"
+
+        // 1. Connection authorization
+        let req = ConnectionRequestPayload(
+            clientID: clientID,
+            clientName: "Integration iPhone",
+            clientModel: "iPhone 11",
+            protocolVersion: 1,
+            preferredWidth: 1170,
+            preferredHeight: 2532,
+            preferredFPS: 60,
+            preferredTransport: "USB",
+            sessionID: sessionID
+        )
+
+        let decision = authorizer.processRequest(req, isCurrentlyStreaming: false, transport: "USB")
+        assertTest(decision == .approved || decision == .promptUser, "Request successfully processed by authorizer")
+        _ = authorizer.approve(sessionID: sessionID, rememberDevice: true)
+        assertTest(authorizer.isTrusted(clientID: clientID), "Device permanently registered as trusted")
+
+        // 2. Display Session lifecycle
+        let dev = MirooDevice(
+            id: clientID,
+            deviceType: .iphone,
+            displayName: "Integration iPhone",
+            modelName: "iPhone 11",
+            osVersion: "17.5.1",
+            isUSBAvailable: true,
+            isWiFiAvailable: true,
+            availability: .connected,
+            lastSeen: Date()
+        )
+
+        let session = MirooDisplaySession(
+            device: dev,
+            sessionID: sessionID,
+            width: 1170,
+            height: 2532,
+            preferredTransport: .usb
+        )
+
+        assertTest(session.readinessState == .connecting, "Readiness state begins in .connecting")
+
+        // Progress readiness state machine
+        session.transitionReadiness(to: .displayCreating)
+        assertTest(session.readinessState == .displayCreating, "Readiness is .displayCreating")
+
+        session.transitionReadiness(to: .waitingForCapture)
+        assertTest(session.readinessState == .waitingForCapture, "Readiness is .waitingForCapture")
+
+        session.transitionReadiness(to: .waitingForReady)
+        assertTest(session.readinessState == .waitingForReady, "Readiness is .waitingForReady")
+
+        // Simulate client READY arrival
+        session.transitionReadiness(to: .streaming)
+        assertTest(session.readinessState == .streaming, "Readiness successfully reaches .streaming on READY")
+
+        // Validate safe button reset on stop
+        session.stop(reason: .userDisconnected)
+        assertTest(session.readinessState == .disconnected, "Readiness safely reaches .disconnected")
+        assertTest(session.inputController.isLeftButtonDown == false, "Mouse buttons released cleanly")
     }
 }
