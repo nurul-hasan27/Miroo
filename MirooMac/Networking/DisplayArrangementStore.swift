@@ -409,4 +409,26 @@ public final class DisplayArrangementStore: @unchecked Sendable {
         return false
     }
 
+    // MARK: - Reconfiguration Event Filtering
+
+    /// Evaluates whether a display reconfiguration callback represents a genuine user-driven movement of the Miroo display.
+    /// Strictly filters out configuration begin flags, non-moved flags, Miroo's own programmatic layout updates,
+    /// and events belonging to other displays.
+    public static func shouldProcessReconfiguration(
+        displayID: CGDirectDisplayID,
+        targetMirooID: CGDirectDisplayID,
+        flags: CGDisplayChangeSummaryFlags,
+        isApplyingArrangement: Bool
+    ) -> Bool {
+        // 1. Transaction must be completely committed by WindowServer
+        guard !flags.contains(.beginConfigurationFlag) else { return false }
+        // 2. Must be a genuine spatial movement event
+        guard flags.contains(.movedFlag) else { return false }
+        // 3. Must not be during Miroo's programmatic arrangement restoration or mode switches
+        guard !isApplyingArrangement else { return false }
+        // 4. Must target the active Miroo virtual display
+        guard targetMirooID != 0 && displayID == targetMirooID else { return false }
+        return true
+    }
 }
+

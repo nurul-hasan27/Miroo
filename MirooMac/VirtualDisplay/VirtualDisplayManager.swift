@@ -52,7 +52,20 @@ public final class VirtualDisplayManager {
     public private(set) var currentOrientation: MirooOrientation = .portrait
 
     private var screenParamsObserver: Any?
-    private var isApplyingArrangement = false
+    private let stateLock = os_unfair_lock_t.allocate(capacity: 1)
+    private var _isApplyingArrangement: Bool = false
+
+    private func setIsApplyingArrangement(_ value: Bool) {
+        os_unfair_lock_lock(stateLock)
+        _isApplyingArrangement = value
+        os_unfair_lock_unlock(stateLock)
+    }
+
+    private func getIsApplyingArrangement() -> Bool {
+        os_unfair_lock_lock(stateLock)
+        defer { os_unfair_lock_unlock(stateLock) }
+        return _isApplyingArrangement
+    }
 
     public var displayID: CGDirectDisplayID {
         return bridge?.displayID ?? 0
@@ -70,10 +83,10 @@ public final class VirtualDisplayManager {
         guard let b = bridge, b.displayID != 0 else { return false }
 
         // Block screen reconfiguration notification from treating mode switch as user rearrangement
-        isApplyingArrangement = true
+        setIsApplyingArrangement(true)
         defer {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                self?.isApplyingArrangement = false
+                self?.setIsApplyingArrangement(false)
             }
         }
 
@@ -117,6 +130,7 @@ public final class VirtualDisplayManager {
     // MARK: - Lifecycle
 
     public init(initialOrientation: MirooOrientation? = nil) {
+        stateLock.initialize(to: os_unfair_lock())
         if let initOri = initialOrientation {
             self.currentOrientation = initOri
         } else if let saved = DisplayArrangementStore.shared.lastSavedOrientation {
@@ -128,6 +142,7 @@ public final class VirtualDisplayManager {
     deinit {
         stopObservingScreenParameters()
         destroy()
+        stateLock.deallocate()
     }
 
     // MARK: - Screen Parameter Reconfiguration Observers
@@ -166,14 +181,19 @@ public final class VirtualDisplayManager {
     }
 
     private func handleDisplayReconfiguration(displayID: CGDirectDisplayID, flags: CGDisplayChangeSummaryFlags) {
-        guard !flags.contains(.beginConfigurationFlag) else { return }
-        guard !isApplyingArrangement else { return }
-        guard let b = bridge, b.displayID != 0, displayID == b.displayID else { return }
+        guard let b = bridge, b.displayID != 0 else { return }
+        guard DisplayArrangementStore.shouldProcessReconfiguration(
+            displayID: displayID,
+            targetMirooID: b.displayID,
+            flags: flags,
+            isApplyingArrangement: getIsApplyingArrangement()
+        ) else { return }
         handleScreenParametersChanged()
     }
 
+
     private func handleScreenParametersChanged() {
-        guard !isApplyingArrangement else { return }
+        guard !getIsApplyingArrangement() else { return }
         guard let b = bridge, b.displayID != 0, CGDisplayIsOnline(b.displayID) != 0 else { return }
 
         let mirooBounds = CGDisplayBounds(b.displayID)
@@ -201,10 +221,10 @@ public final class VirtualDisplayManager {
         }
 
         // Prevent initial creation notifications from overwriting saved arrangement
-        isApplyingArrangement = true
+        setIsApplyingArrangement(true)
         defer {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                self?.isApplyingArrangement = false
+                self?.setIsApplyingArrangement(false)
             }
         }
 
@@ -280,6 +300,13 @@ public final class VirtualDisplayManager {
     public func destroy() {
         guard isCreated, let b = bridge else { return }
 
+        setIsApplyingArrangement(true)
+        defer {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                self?.setIsApplyingArrangement(false)
+            }
+        }
+
         // Save last known position before destroying
         if CGDisplayIsOnline(b.displayID) != 0 {
             let currentBounds = CGDisplayBounds(b.displayID)
@@ -321,10 +348,10 @@ public final class VirtualDisplayManager {
         guard let bridge = bridge, bridge.displayID != 0 else { return false }
         let id = bridge.displayID
 
-        isApplyingArrangement = true
+        setIsApplyingArrangement(true)
         defer {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-                self?.isApplyingArrangement = false
+                self?.setIsApplyingArrangement(false)
             }
         }
 
