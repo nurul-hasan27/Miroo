@@ -525,7 +525,9 @@ public final class MirooReceiver: @unchecked Sendable {
             if let sh = serverHost, !sh.isEmpty {
                 host = .name(sh, nil)
             } else if let conn = connection {
-                if let remote = conn.connection.currentPath?.remoteEndpoint, case .hostPort(let h, _) = remote {
+                if let remoteHost = conn.resolvedRemoteHost {
+                    host = .name(remoteHost, nil)
+                } else if let remote = conn.connection.currentPath?.remoteEndpoint, case .hostPort(let h, _) = remote {
                     host = h
                 } else if case .hostPort(let h, _) = conn.connection.endpoint {
                     host = h
@@ -789,46 +791,41 @@ public final class MirooReceiver: @unchecked Sendable {
     private func handleInboundUSBConnection(_ newNWConn: NWConnection) {
         queue.async { [weak self] in
             guard let self = self else { return }
-            print("[Miroo Receiver] Incoming USB connection from Mac via usbmuxd tunnel!")
 
-            // USB has highest priority: disconnect any active Wi-Fi connection
-            if let existing = self.connection {
-                print("[Miroo Receiver] Prioritizing USB connection over existing Wi-Fi connection. Disconnecting old connection...")
-                existing.disconnect()
-                self.connection = nil
+            let isLoopback: Bool
+            if case .hostPort(let host, _) = newNWConn.endpoint {
+                let hostStr = "\(host)".lowercased()
+                isLoopback = hostStr.contains("127.0.0.1") || hostStr.contains("::1") || hostStr.contains("localhost")
+            } else {
+                isLoopback = false
             }
 
-            self.isUSBActive = true
-            self.currentTransportType = .usb
-            self.browser.stop() // Pause Bonjour browsing while on USB
+            print("[Miroo Receiver] Incoming connection from Mac (Endpoint: \(newNWConn.endpoint), isUSB: \(isLoopback))...")
+
+            if isLoopback {
+                // USB has highest priority: disconnect any active Wi-Fi connection
+                if let existing = self.connection {
+                    print("[Miroo Receiver] Prioritizing USB connection over existing connection. Disconnecting old connection...")
+                    existing.disconnect()
+                    self.connection = nil
+                }
+                self.isUSBActive = true
+                self.currentTransportType = .usb
+                self.browser.stop() // Pause Bonjour browsing while on USB
+            } else {
+                self.isUSBActive = false
+                self.currentTransportType = .tcp
+            }
             self.reconnectAttempt = 0
 
-            let hostName = self.activeHostName ?? "Mac (USB)"
-            _ = self.lifecycle.transition(to: .connected(host: hostName, transport: .usb))
+            let hostName = self.activeHostName ?? (isLoopback ? "Mac (USB)" : "Miroo Mac")
+            _ = self.lifecycle.transition(to: .connected(host: hostName, transport: self.currentTransportType))
 
             let conn = MirooConnection(connection: newNWConn, queue: self.queue)
             self.connection = conn
 
-            conn.onStateChanged = { [weak self, weak conn] state in
-                guard let self = self, let conn = conn else { return }
-                print("[Miroo Receiver] USB Connection state: \(state)")
-                if state == .connected {
-                    print("[Miroo Receiver] USB connected to Mac. Sending CONNECTION_REQUEST...")
-                    let sID = UUID().uuidString
-                    self.activeSessionID = sID
-                    let req = ConnectionRequestPayload(
-                        clientID: DeviceIdentity.currentID,
-                        clientName: self.clientName,
-                        clientModel: DeviceIdentity.defaultModelName(),
-                        protocolVersion: Int(MirooHeader.currentVersion),
-                        preferredWidth: 1170,
-                        preferredHeight: 2532,
-                        preferredFPS: 60,
-                        preferredTransport: "USB",
-                        sessionID: sID
-                    )
-                    conn.send(message: .connectionRequest(req))
-                }
+            conn.onStateChanged = { state in
+                print("[Miroo Receiver] Inbound connection state: \(state) (USB: \(isLoopback))")
             }
 
             conn.onMessageReceived = { [weak self, weak conn] message in
