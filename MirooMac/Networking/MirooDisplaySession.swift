@@ -28,6 +28,19 @@ public enum DisplaySessionState: String, Codable, Sendable {
     case failed
 }
 
+public enum MirooSessionReadinessState: String, Codable, Sendable {
+    case disconnected = "Disconnected"
+    case discovering = "Discovering"
+    case waitingForApproval = "Waiting for Approval"
+    case connecting = "Connecting"
+    case displayCreating = "Creating Virtual Display"
+    case waitingForCapture = "Waiting for Screen Capture"
+    case waitingForReady = "Waiting for READY Handshake"
+    case streaming = "Streaming"
+    case paused = "Paused"
+    case error = "Error"
+}
+
 @MainActor
 public final class MirooDisplaySession: ObservableObject, Identifiable {
 
@@ -38,10 +51,23 @@ public final class MirooDisplaySession: ObservableObject, Identifiable {
 
     // MARK: - State & Telemetry
     @Published public private(set) var state: DisplaySessionState = .connecting
+    @Published public private(set) var readinessState: MirooSessionReadinessState = .connecting
+    @Published public private(set) var hasReceivedReady: Bool = false
+    @Published public private(set) var hasCapturedFirstFrame: Bool = false
+    @Published public private(set) var hasEncodedFirstKeyframe: Bool = false
+    @Published public private(set) var hasTransmittedFirstFrame: Bool = false
+
     @Published public private(set) var currentTransportType: VideoTransportType = .tcp
     @Published public private(set) var activeTransportName: String = "TCP"
     @Published public private(set) var currentOrientation: MirooOrientation = .portrait
     @Published public private(set) var isPaused: Bool = false
+
+    public func transitionReadiness(to newState: MirooSessionReadinessState) {
+        guard readinessState != newState else { return }
+        let old = readinessState
+        readinessState = newState
+        print("[Miroo Readiness] Session '\(sessionID)' state transition: [\(old.rawValue)] -> [\(newState.rawValue)]")
+    }
 
     // Live Metrics
     @Published public private(set) var currentFPS: Double = 0.0
@@ -113,6 +139,7 @@ public final class MirooDisplaySession: ObservableObject, Identifiable {
         self.currentTransportType = negotiatedTransport
         self.activeTransportName = negotiatedTransport.rawValue
         self.state = .connecting
+        transitionReadiness(to: .displayCreating)
 
         // 1. Allocate dedicated virtual display
         let manager = VirtualDisplayManager()
@@ -121,6 +148,7 @@ public final class MirooDisplaySession: ObservableObject, Identifiable {
         let displayName = "Miroo - \(device.displayName)"
         guard manager.create(deviceID: device.id, displayName: displayName) else {
             self.state = .failed
+            transitionReadiness(to: .error)
             throw CapturerError.captureFailed("Failed to create virtual display for \(device.displayName)")
         }
 
@@ -144,6 +172,10 @@ public final class MirooDisplaySession: ObservableObject, Identifiable {
 
         enc.onEncodedFrame = { [weak self] data, pts, isKeyframe, captureNs, encStartNs, encCompNs, encodeDurationUs in
             guard let self = self, !self.isPaused else { return }
+            if !self.hasEncodedFirstKeyframe && isKeyframe {
+                self.hasEncodedFirstKeyframe = true
+                print("[Miroo Readiness] First keyframe encoded (\(data.count) bytes)")
+            }
             self.enqueueFrame(
                 data: data,
                 pts: pts,
@@ -156,11 +188,16 @@ public final class MirooDisplaySession: ObservableObject, Identifiable {
         }
 
         // 3. ScreenCaptureKit Capturer
+        transitionReadiness(to: .waitingForCapture)
         let cap = DisplayStreamCapturer()
         self.capturer = cap
 
         cap.onFrameCaptured = { [weak self] pixelBuffer, presentationTime, captureTimestampNs in
             guard let self = self, !self.isPaused else { return }
+            if !self.hasCapturedFirstFrame {
+                self.hasCapturedFirstFrame = true
+                print("[Miroo Readiness] First frame captured from virtual display ID \(manager.displayID) (bounds: \(self.displayWidth)x\(self.displayHeight))")
+            }
             let forceKey = self.frameQueue.needsImmediateKeyframe
             self.encoder?.encode(
                 pixelBuffer: pixelBuffer,
@@ -185,10 +222,10 @@ public final class MirooDisplaySession: ObservableObject, Identifiable {
         // 5. Wire connection event handlers
         setupConnectionHandlers(connection)
 
-        self.state = .active
+        transitionReadiness(to: .waitingForReady)
         startTelemetryMonitoring()
-        print("[MirooDisplaySession] Session started for device '\(device.displayName)' [ID: \(device.id), Display: \(manager.displayID)] over \(activeTransportName)")
-        PipelineLogger.log(.transport, "Display session active for '\(device.displayName)' over \(activeTransportName)", force: true)
+        print("[MirooDisplaySession] Session initialized for device '\(device.displayName)' [ID: \(device.id), Display: \(manager.displayID)] over \(activeTransportName). Waiting for READY handshake...")
+        PipelineLogger.log(.transport, "Display session initialized for '\(device.displayName)' over \(activeTransportName)", force: true)
     }
 
     /// Stops this display session cleanly, tears down its virtual display, and releases capturer/encoder.
@@ -197,6 +234,7 @@ public final class MirooDisplaySession: ObservableObject, Identifiable {
         print("[MirooDisplaySession] Stopping display session '\(sessionID)' for '\(device.displayName)' (Reason: \(reason.rawValue))...")
 
         state = .disconnected
+        transitionReadiness(to: .disconnected)
         telemetryTimer?.invalidate()
         telemetryTimer = nil
 
@@ -368,9 +406,20 @@ public final class MirooDisplaySession: ObservableObject, Identifiable {
         encoder?.requestKeyframe()
     }
 
+    private var previousReadinessStateBeforePause: MirooSessionReadinessState?
+
     public func togglePause() {
         isPaused.toggle()
-        state = isPaused ? .paused : .active
+        if isPaused {
+            previousReadinessStateBeforePause = readinessState
+            state = .paused
+            transitionReadiness(to: .paused)
+        } else {
+            let resumeState = previousReadinessStateBeforePause ?? (hasReceivedReady ? .streaming : .waitingForReady)
+            previousReadinessStateBeforePause = nil
+            state = (resumeState == .streaming) ? .active : .connecting
+            transitionReadiness(to: resumeState)
+        }
     }
 
     // MARK: - Input Forwarding
@@ -445,6 +494,10 @@ public final class MirooDisplaySession: ObservableObject, Identifiable {
         )
 
         isSending = true
+        if !hasTransmittedFirstFrame {
+            hasTransmittedFirstFrame = true
+            print("[Miroo Readiness] First frame transmitted via \(transport.transportType.rawValue) (seq: \(frame.sequence), bytes=\(frame.data.count), isKeyframe=\(frame.isKeyframe))")
+        }
         if frame.sequence == 1 || frame.sequence % 60 == 0 {
             print("[MirooDisplaySession] Transmitting frame #\(frame.sequence) via \(transport.transportType.rawValue) (bytes=\(frame.data.count), isKeyframe=\(frame.isKeyframe))")
         }
@@ -471,7 +524,10 @@ public final class MirooDisplaySession: ObservableObject, Identifiable {
                 guard let self = self else { return }
                 switch message.header.messageType {
                 case .ready:
-                    print("[MirooDisplaySession] Received READY from client for session '\(self.sessionID)'. Transitioning to streaming.")
+                    print("[Miroo Readiness] READY received from client for session '\(self.sessionID)'. Transitioning to streaming.")
+                    self.hasReceivedReady = true
+                    self.state = .active
+                    self.transitionReadiness(to: .streaming)
                     conn.transitionToStreaming()
                     self.videoTransport?.start()
                     self.requestKeyframe()

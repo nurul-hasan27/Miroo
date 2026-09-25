@@ -369,13 +369,25 @@ struct ActiveSessionCard: View {
     @ObservedObject var session: MirooDisplaySession
     @ObservedObject var engine: MirooEngine
 
+    var readinessColor: Color {
+        switch session.readinessState {
+        case .streaming: return .green
+        case .waitingForReady, .waitingForCapture: return .orange
+        case .displayCreating, .connecting: return .blue
+        case .paused: return .orange
+        case .disconnected: return .gray
+        case .error: return .red
+        default: return .secondary
+        }
+    }
+
     var body: some View {
         VStack(spacing: 10) {
             HStack(spacing: 12) {
                 // Device Icon
                 Image(systemName: "display.2")
                     .font(.system(size: 22))
-                    .foregroundColor(.green)
+                    .foregroundColor(readinessColor)
 
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
@@ -384,6 +396,20 @@ struct ActiveSessionCard: View {
                         Text("(\(session.displayWidth) × \(session.displayHeight))")
                             .font(.system(size: 12, design: .monospaced))
                             .foregroundColor(.secondary)
+
+                        // Readiness Badge
+                        HStack(spacing: 4) {
+                            Circle()
+                                .fill(readinessColor)
+                                .frame(width: 7, height: 7)
+                            Text(session.readinessState.rawValue)
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundColor(readinessColor)
+                        }
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(readinessColor.opacity(0.12))
+                        .cornerRadius(4)
                     }
 
                     HStack(spacing: 8) {
@@ -425,6 +451,57 @@ struct ActiveSessionCard: View {
                 .foregroundColor(.red)
             }
 
+            // Readiness Pipeline Diagnostics Row
+            HStack(spacing: 12) {
+                HStack(spacing: 4) {
+                    Text("Display ID:")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.secondary)
+                    Text("\(session.displayManager?.displayID ?? 0)")
+                        .font(.system(size: 10, design: .monospaced))
+                }
+
+                HStack(spacing: 4) {
+                    Text("Capture:")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.secondary)
+                    Text(session.hasCapturedFirstFrame ? "Active" : "Waiting")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(session.hasCapturedFirstFrame ? .green : .orange)
+                }
+
+                HStack(spacing: 4) {
+                    Text("Encode:")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.secondary)
+                    Text(session.hasEncodedFirstKeyframe ? "Keyframe OK" : "Waiting")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(session.hasEncodedFirstKeyframe ? .green : .orange)
+                }
+
+                HStack(spacing: 4) {
+                    Text("READY:")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.secondary)
+                    Text(session.hasReceivedReady ? "Handshake OK" : "Pending")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(session.hasReceivedReady ? .green : .orange)
+                }
+
+                HStack(spacing: 4) {
+                    Text("Tx:")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.secondary)
+                    Text(session.hasTransmittedFirstFrame ? "Streaming" : "Idle")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(session.hasTransmittedFirstFrame ? .green : .secondary)
+                }
+
+                Spacer()
+            }
+            .padding(.horizontal, 4)
+            .padding(.vertical, 2)
+
             Divider()
 
             // Dynamic Transport Switcher (Part 12)
@@ -459,7 +536,7 @@ struct ActiveSessionCard: View {
         .cornerRadius(10)
         .overlay(
             RoundedRectangle(cornerRadius: 10)
-                .stroke(Color.green.opacity(0.3), lineWidth: 1.5)
+                .stroke(readinessColor.opacity(0.3), lineWidth: 1.5)
         )
     }
 }

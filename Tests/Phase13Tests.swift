@@ -47,6 +47,7 @@ final class Phase13Tests {
         testPerDevicePersistentDisplayArrangement()
         testDynamicTransportSwitchingWithoutDisplayReset()
         testDisplaySessionInputSafetyAndWiFiHostIntegrity()
+        testReadinessDiagnosticStateMachine()
 
         print("==================================================================")
         print("Phase 13 Verification Results: \(testsPassed) Passed, \(testsFailed) Failed")
@@ -548,5 +549,58 @@ final class Phase13Tests {
         // Stopping session must also release all buttons
         session.stop(reason: .userDisconnected)
         assertTest(session.inputController.isLeftButtonDown == false, "Left mouse button safely released upon session disconnect")
+    }
+
+    // MARK: - Test 12: Readiness Diagnostic State Machine & Diagnostic Telemetry
+    static func testReadinessDiagnosticStateMachine() {
+        print("\n[Test 12] Readiness Diagnostic State Machine & Diagnostic Telemetry...")
+
+        let dev = MirooDevice(
+            id: "readiness-test-device",
+            deviceType: .iphone,
+            displayName: "Readiness Phone",
+            modelName: "iPhone 11",
+            osVersion: "17.5.1",
+            isUSBAvailable: true,
+            isWiFiAvailable: true,
+            availability: .connected,
+            lastSeen: Date()
+        )
+
+        let session = MirooDisplaySession(
+            device: dev,
+            sessionID: "readiness-session-12",
+            width: 1170,
+            height: 2532,
+            preferredTransport: .usb
+        )
+
+        assertTest(session.readinessState == .connecting, "Initial readiness state is .connecting")
+        assertTest(!session.hasReceivedReady, "hasReceivedReady is false initially")
+        assertTest(!session.hasCapturedFirstFrame, "hasCapturedFirstFrame is false initially")
+        assertTest(!session.hasEncodedFirstKeyframe, "hasEncodedFirstKeyframe is false initially")
+        assertTest(!session.hasTransmittedFirstFrame, "hasTransmittedFirstFrame is false initially")
+
+        // Step-by-step readiness transitions
+        session.transitionReadiness(to: .displayCreating)
+        assertTest(session.readinessState == .displayCreating, "Transitioned to .displayCreating")
+
+        session.transitionReadiness(to: .waitingForCapture)
+        assertTest(session.readinessState == .waitingForCapture, "Transitioned to .waitingForCapture")
+
+        session.transitionReadiness(to: .waitingForReady)
+        assertTest(session.readinessState == .waitingForReady, "Transitioned to .waitingForReady")
+
+        session.transitionReadiness(to: .streaming)
+        assertTest(session.readinessState == .streaming, "Transitioned to .streaming")
+
+        session.togglePause()
+        assertTest(session.readinessState == .paused, "Transitioned to .paused on pause")
+
+        session.togglePause()
+        assertTest(session.readinessState == .streaming, "Resumed back to .streaming")
+
+        session.stop(reason: .userDisconnected)
+        assertTest(session.readinessState == .disconnected, "Transitioned to .disconnected on stop")
     }
 }
