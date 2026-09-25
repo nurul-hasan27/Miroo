@@ -643,6 +643,16 @@ struct ReceiverContentView: View {
                                 }
                                 .disabled(viewModel.selectedHost == nil || viewModel.lifecycleState.isConnecting)
 
+                                if viewModel.lifecycleState.isConnecting {
+                                    Button("Cancel Request") {
+                                        viewModel.stopReceiving()
+                                    }
+                                    .font(.subheadline)
+                                    .fontWeight(.medium)
+                                    .foregroundColor(.red)
+                                    .padding(.top, 2)
+                                }
+
                                 HStack {
                                     Text("Orientation:")
                                         .font(.caption)

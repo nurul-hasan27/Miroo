@@ -251,6 +251,30 @@ public struct MirooSettingsView: View {
                 }
             }
 
+            Section(header: Text("Device Authorization & Pairing").font(.headline)) {
+                Toggle("Auto-accept trusted devices", isOn: Binding(
+                    get: { engine.authorizer.autoAcceptTrustedDevices },
+                    set: { engine.authorizer.autoAcceptTrustedDevices = $0 }
+                ))
+                .help("When enabled, recognized devices that were previously allowed will connect automatically without prompting.")
+
+                let trustedCount = engine.authorizer.trustedDeviceIDs.count
+                HStack {
+                    Text("Paired Trusted Devices:")
+                    Spacer()
+                    Text("\(trustedCount) saved")
+                        .foregroundColor(.secondary)
+                }
+
+                if trustedCount > 0 {
+                    Button(role: .destructive) {
+                        engine.authorizer.clearAllTrustedDevices()
+                    } label: {
+                        Text("Clear All Paired Devices")
+                    }
+                }
+            }
+
             Section(header: Text("Connection Guidance").font(.headline)) {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 8) {
