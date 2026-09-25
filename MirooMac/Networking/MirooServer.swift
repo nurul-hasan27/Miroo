@@ -24,7 +24,7 @@ public final class MirooServer: @unchecked Sendable {
     // MARK: - Network Components
     private let queue = DispatchQueue(label: "com.miroo.server.network", qos: .userInteractive)
     private var listener: NWListener?
-    private var activeConnection: MirooConnection?
+    public private(set) var activeConnection: MirooConnection?
     private var isSending: Bool = false
 
     // MARK: - Frame Queue & Telemetry
@@ -54,6 +54,9 @@ public final class MirooServer: @unchecked Sendable {
     public var onScrollEvent: ((ScrollEventPayload) -> Void)?
     public var onRightClick: ((RightClickPayload) -> Void)?
     public var onRequestKeyframe: (() -> Void)?
+    public var onConnectionRequest: ((ConnectionRequestPayload, MirooConnection) -> Void)?
+    public var onConnectionCancelled: ((ConnectionCancelledPayload) -> Void)?
+    public var onSessionEnded: ((SessionEndedPayload) -> Void)?
     public let adaptiveController = AdaptiveStreamingController()
     public var onAdaptiveDecision: ((AdaptiveDecision) -> Void)?
 
@@ -279,6 +282,42 @@ public final class MirooServer: @unchecked Sendable {
 
     private func handleMessage(_ message: MirooMessage, from conn: MirooConnection) {
         switch message.header.messageType {
+        case .connectionRequest:
+            if let req = message.decodeConnectionRequest() {
+                print("[Miroo Server] Received CONNECTION_REQUEST from '\(req.clientName)' (\(req.clientModel), session: \(req.sessionID))")
+                if let onConnectionRequest = onConnectionRequest {
+                    onConnectionRequest(req, conn)
+                } else {
+                    // Default auto-accept if no external authorizer attached
+                    let accepted = ConnectionAcceptedPayload(
+                        sessionID: req.sessionID,
+                        hostID: DeviceIdentity.currentID,
+                        hostName: serviceName,
+                        width: width,
+                        height: height,
+                        targetFPS: targetFPS,
+                        scale: 2.0,
+                        selectedTransport: currentTransportType.rawValue,
+                        udpPort: udpPort,
+                        sessionToken: udpSessionToken
+                    )
+                    conn.send(message: .connectionAccepted(accepted))
+                }
+            }
+
+        case .connectionCancelled:
+            if let cancelled = message.decodeConnectionCancelled() {
+                print("[Miroo Server] Client cancelled connection request for session \(cancelled.sessionID)")
+                onConnectionCancelled?(cancelled)
+            }
+
+        case .sessionEnded:
+            if let ended = message.decodeSessionEnded() {
+                print("[Miroo Server] Session ended by client: \(ended.reason.rawValue)")
+                onSessionEnded?(ended)
+                disconnectActiveConnection()
+            }
+
         case .hello:
             if let hello = message.decodePayload(HelloPayload.self) {
                 print("[Miroo Server] Received HELLO from '\(hello.name)' (role: \(hello.role), v\(hello.version))")

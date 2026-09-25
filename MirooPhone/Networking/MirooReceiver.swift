@@ -55,6 +55,7 @@ public final class MirooReceiver: @unchecked Sendable {
     public let reconnectPolicy = ReconnectPolicy()
     public private(set) var reconnectAttempt: Int = 0
     public private(set) var activeHostName: String?
+    public private(set) var activeSessionID: String? = nil
     public private(set) var activeConnectingHost: DiscoveredHost?
     public private(set) var discoveredHosts: [DiscoveredHost] = []
     public var onLifecycleChanged: ((ConnectionLifecycleState) -> Void)?
@@ -187,6 +188,14 @@ public final class MirooReceiver: @unchecked Sendable {
         queue.async { [weak self] in
             guard let self = self else { return }
             self.stopPingTimer()
+            if let sID = self.activeSessionID {
+                if self.connection?.state == .streaming {
+                    self.connection?.send(message: .sessionEnded(SessionEndedPayload(sessionID: sID, reason: .userDisconnected)))
+                } else {
+                    self.connection?.send(message: .connectionCancelled(ConnectionCancelledPayload(sessionID: sID, reason: "userCancelled")))
+                }
+                self.activeSessionID = nil
+            }
             self.activeVideoTransport?.stop()
             self.activeVideoTransport = nil
             self.connection?.disconnect()
@@ -210,11 +219,25 @@ public final class MirooReceiver: @unchecked Sendable {
             let conn = MirooConnection(to: endpoint, queue: self.queue)
             self.connection = conn
 
-            conn.onStateChanged = { [weak self] state in
-                guard self != nil else { return }
+            conn.onStateChanged = { [weak self, weak conn] state in
+                guard let self = self, let conn = conn else { return }
                 print("[Miroo Receiver] Connection state: \(state)")
                 if state == .connected {
-                    print("[Miroo Receiver] Connected to transport. Awaiting server HELLO...")
+                    print("[Miroo Receiver] Connected to transport. Sending CONNECTION_REQUEST...")
+                    let sID = UUID().uuidString
+                    self.activeSessionID = sID
+                    let req = ConnectionRequestPayload(
+                        clientID: DeviceIdentity.currentID,
+                        clientName: self.clientName,
+                        clientModel: DeviceIdentity.defaultModelName(),
+                        protocolVersion: Int(MirooHeader.currentVersion),
+                        preferredWidth: 1170,
+                        preferredHeight: 2532,
+                        preferredFPS: 60,
+                        preferredTransport: self.isUSBActive ? "USB" : "auto",
+                        sessionID: sID
+                    )
+                    conn.send(message: .connectionRequest(req))
                 }
             }
 
@@ -358,6 +381,33 @@ public final class MirooReceiver: @unchecked Sendable {
 
     private func handleMessage(_ message: MirooMessage, from conn: MirooConnection) {
         switch message.header.messageType {
+        case .connectionAccepted:
+            if let accepted = message.decodeConnectionAccepted() {
+                print("[Miroo Receiver] Connection accepted by Mac '\(accepted.hostName)' (session: \(accepted.sessionID))")
+                self.activeHostName = accepted.hostName
+            }
+
+        case .connectionRejected:
+            if let rejected = message.decodeConnectionRejected() {
+                print("[Miroo Receiver] Connection rejected by Mac: \(rejected.reasonCode.rawValue) - \(rejected.reasonMessage)")
+                _ = self.lifecycle.transition(to: .error(message: rejected.reasonMessage))
+                self.connection?.disconnect()
+            }
+
+        case .sessionStarting:
+            print("[Miroo Receiver] Mac is allocating virtual display session...")
+
+        case .sessionStarted:
+            if let started = message.decodeSessionStarted() {
+                print("[Miroo Receiver] Mac display session started: \(started.width)x\(started.height)")
+            }
+
+        case .sessionEnded:
+            if let ended = message.decodeSessionEnded() {
+                print("[Miroo Receiver] Session ended by Mac: \(ended.reason.rawValue)")
+                stopReceiving()
+            }
+
         case .hello:
             if let hello = message.decodePayload(HelloPayload.self) {
                 print("[Miroo Receiver] Received HELLO from '\(hello.name)' (role: \(hello.role))")
@@ -757,11 +807,25 @@ public final class MirooReceiver: @unchecked Sendable {
             let conn = MirooConnection(connection: newNWConn, queue: self.queue)
             self.connection = conn
 
-            conn.onStateChanged = { [weak self] state in
-                guard self != nil else { return }
+            conn.onStateChanged = { [weak self, weak conn] state in
+                guard let self = self, let conn = conn else { return }
                 print("[Miroo Receiver] USB Connection state: \(state)")
                 if state == .connected {
-                    print("[Miroo Receiver] USB connected to Mac. Awaiting server HELLO...")
+                    print("[Miroo Receiver] USB connected to Mac. Sending CONNECTION_REQUEST...")
+                    let sID = UUID().uuidString
+                    self.activeSessionID = sID
+                    let req = ConnectionRequestPayload(
+                        clientID: DeviceIdentity.currentID,
+                        clientName: self.clientName,
+                        clientModel: DeviceIdentity.defaultModelName(),
+                        protocolVersion: Int(MirooHeader.currentVersion),
+                        preferredWidth: 1170,
+                        preferredHeight: 2532,
+                        preferredFPS: 60,
+                        preferredTransport: "USB",
+                        sessionID: sID
+                    )
+                    conn.send(message: .connectionRequest(req))
                 }
             }
 

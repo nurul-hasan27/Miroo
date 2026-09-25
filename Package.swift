@@ -51,7 +51,8 @@ let package = Package(
                 "AdaptiveStreamingController.swift",
                 "ConnectionLifecycle.swift",
                 "DisplayArrangementStore.swift",
-                "MirooDevice.swift"
+                "MirooDevice.swift",
+                "ConnectionAuthorizer.swift"
             ]
         ),
         .executableTarget(
@@ -71,6 +72,7 @@ let package = Package(
                 "VirtualDisplay/VirtualDisplayManager.swift",
                 "Capture/DisplayStreamCapturer.swift",
                 "Encoder/VideoEncoder.swift",
+                "App/MirooApprovalWindow.swift",
                 "App/MirooEngine.swift",
                 "App/MirooSettingsView.swift",
                 "App/MirooMenuBarController.swift",
