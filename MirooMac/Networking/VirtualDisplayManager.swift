@@ -12,9 +12,6 @@ import Cocoa
 #if canImport(CGVirtualDisplayBridge)
 import CGVirtualDisplayBridge
 #endif
-#if canImport(MirooNetworking)
-import MirooNetworking
-#endif
 
 /// Manages the virtual display on macOS, coordinating between private CoreGraphics
 /// creation APIs and public CoreGraphics display configuration APIs.
@@ -46,6 +43,9 @@ public final class VirtualDisplayManager {
     public static let defaultSizeInMillimeters = CGSize(width: 71.5, height: 146.7)
 
     // MARK: - Properties
+
+    public var deviceID: String? = nil
+    public var customDisplayName: String? = nil
 
     private(set) var bridge: CGVirtualDisplayBridge?
     private(set) var isCreated = false
@@ -96,6 +96,7 @@ public final class VirtualDisplayManager {
             let mainBounds = CGDisplayBounds(CGMainDisplayID())
             if currentBounds.width > 0 && currentBounds.height > 0 {
                 DisplayArrangementStore.shared.saveArrangement(
+                    deviceID: self.deviceID,
                     mirooBounds: currentBounds,
                     referenceBounds: mainBounds,
                     orientation: currentOrientation
@@ -203,6 +204,7 @@ public final class VirtualDisplayManager {
         guard mirooBounds.width > 0, mirooBounds.height > 0, mainBounds.width > 0, mainBounds.height > 0 else { return }
 
         let rel = DisplayArrangementStore.shared.saveArrangement(
+            deviceID: self.deviceID,
             mirooBounds: mirooBounds,
             referenceBounds: mainBounds,
             orientation: currentOrientation
@@ -214,7 +216,10 @@ public final class VirtualDisplayManager {
 
     /// Creates the virtual display and positions it as an independent extended desktop.
     @discardableResult
-    public func create() -> Bool {
+    public func create(deviceID: String? = nil, displayName: String? = nil) -> Bool {
+        if let dID = deviceID { self.deviceID = dID }
+        if let dName = displayName { self.customDisplayName = dName }
+
         guard !isCreated else {
             print("[Miroo] Virtual display already created.")
             return true
@@ -228,7 +233,8 @@ public final class VirtualDisplayManager {
             }
         }
 
-        print("[Miroo] Creating virtual display '\(Self.defaultDisplayName)' in \(currentOrientation)...")
+        let nameToUse = self.customDisplayName ?? Self.defaultDisplayName
+        print("[Miroo] Creating virtual display '\(nameToUse)' in \(currentOrientation)...")
 
         let targetLogW = (currentOrientation == .landscape) ? Self.logicalHeight : Self.logicalWidth
         let targetLogH = (currentOrientation == .landscape) ? Self.logicalWidth : Self.logicalHeight
@@ -241,7 +247,7 @@ public final class VirtualDisplayManager {
             let serial = baseSerial + UInt32(attempt)
             do {
                 let candidate = try CGVirtualDisplayBridge(
-                    name: Self.defaultDisplayName,
+                    name: nameToUse,
                     logicalWidth: targetLogW,
                     logicalHeight: targetLogH,
                     scaleFactor: Self.scaleFactor,
@@ -313,6 +319,7 @@ public final class VirtualDisplayManager {
             let mainBounds = CGDisplayBounds(CGMainDisplayID())
             if currentBounds.width > 0 && currentBounds.height > 0 {
                 DisplayArrangementStore.shared.saveArrangement(
+                    deviceID: self.deviceID,
                     mirooBounds: currentBounds,
                     referenceBounds: mainBounds,
                     orientation: currentOrientation
@@ -390,6 +397,7 @@ public final class VirtualDisplayManager {
         let targetOrigin: CGPoint
         if restoreSaved {
             targetOrigin = DisplayArrangementStore.shared.targetOrigin(
+                deviceID: self.deviceID,
                 for: currentOrientation,
                 mirooSize: mirooSize,
                 referenceBounds: mainBounds,

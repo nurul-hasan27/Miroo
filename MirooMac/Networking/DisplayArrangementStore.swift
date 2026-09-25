@@ -176,9 +176,25 @@ public final class DisplayArrangementStore: @unchecked Sendable {
 
     // MARK: - Persistence API
 
+    private func storageKey(deviceID: String?, orientation: MirooOrientation) -> String {
+        let suffix = (orientation == .landscape) ? "Landscape" : "Portrait"
+        if let devID = deviceID, !devID.isEmpty {
+            return "Miroo.DisplayArrangement.\(devID).\(suffix)"
+        }
+        return (orientation == .landscape) ? Self.landscapeKey : Self.portraitKey
+    }
+
+    private func lastOrientationKey(deviceID: String?) -> String {
+        if let devID = deviceID, !devID.isEmpty {
+            return "Miroo.DisplayArrangement.\(devID).LastOrientation"
+        }
+        return Self.lastOrientationKey
+    }
+
     /// Saves the current arrangement of the Miroo display relative to the reference display.
     @discardableResult
     public func saveArrangement(
+        deviceID: String? = nil,
         mirooBounds: CGRect,
         referenceBounds: CGRect,
         orientation: MirooOrientation
@@ -192,10 +208,15 @@ public final class DisplayArrangementStore: @unchecked Sendable {
             orientation: orientation
         )
 
-        let key = (orientation == .landscape) ? Self.landscapeKey : Self.portraitKey
+        let key = storageKey(deviceID: deviceID, orientation: orientation)
         if let encoded = try? JSONEncoder().encode(relationship) {
             defaults.set(encoded, forKey: key)
-            defaults.set(orientation.rawValue, forKey: Self.lastOrientationKey)
+            defaults.set(orientation.rawValue, forKey: lastOrientationKey(deviceID: deviceID))
+            // Also store to default global key for backward compatibility
+            if deviceID != nil {
+                let globalKey = (orientation == .landscape) ? Self.landscapeKey : Self.portraitKey
+                defaults.set(encoded, forKey: globalKey)
+            }
             defaults.synchronize()
         }
 
@@ -204,11 +225,24 @@ public final class DisplayArrangementStore: @unchecked Sendable {
 
     /// Loads the stored arrangement for the specified orientation, if available.
     public func loadArrangement(for orientation: MirooOrientation) -> DisplayArrangementRelationship? {
+        loadArrangement(forDeviceID: nil, orientation: orientation)
+    }
+
+    /// Loads the stored arrangement for the specified device and orientation, falling back to global default.
+    public func loadArrangement(forDeviceID deviceID: String?, orientation: MirooOrientation) -> DisplayArrangementRelationship? {
         lock.lock()
         defer { lock.unlock() }
 
-        let key = (orientation == .landscape) ? Self.landscapeKey : Self.portraitKey
-        guard let data = defaults.data(forKey: key) else { return nil }
+        if let devID = deviceID, !devID.isEmpty {
+            let key = storageKey(deviceID: devID, orientation: orientation)
+            if let data = defaults.data(forKey: key),
+               let rel = try? JSONDecoder().decode(DisplayArrangementRelationship.self, from: data) {
+                return rel
+            }
+        }
+
+        let fallbackKey = (orientation == .landscape) ? Self.landscapeKey : Self.portraitKey
+        guard let data = defaults.data(forKey: fallbackKey) else { return nil }
         return try? JSONDecoder().decode(DisplayArrangementRelationship.self, from: data)
     }
 
@@ -222,13 +256,19 @@ public final class DisplayArrangementStore: @unchecked Sendable {
     }
 
     /// Clears any saved arrangements (useful for tests and resetting to defaults).
-    public func clearArrangements() {
+    public func clearArrangements(forDeviceID deviceID: String? = nil) {
         lock.lock()
         defer { lock.unlock() }
 
-        defaults.removeObject(forKey: Self.portraitKey)
-        defaults.removeObject(forKey: Self.landscapeKey)
-        defaults.removeObject(forKey: Self.lastOrientationKey)
+        if let devID = deviceID, !devID.isEmpty {
+            defaults.removeObject(forKey: storageKey(deviceID: devID, orientation: .portrait))
+            defaults.removeObject(forKey: storageKey(deviceID: devID, orientation: .landscape))
+            defaults.removeObject(forKey: lastOrientationKey(deviceID: devID))
+        } else {
+            defaults.removeObject(forKey: Self.portraitKey)
+            defaults.removeObject(forKey: Self.landscapeKey)
+            defaults.removeObject(forKey: Self.lastOrientationKey)
+        }
         defaults.synchronize()
     }
 
@@ -325,6 +365,7 @@ public final class DisplayArrangementStore: @unchecked Sendable {
     /// Computes the restored target origin for the Miroo display.
     /// Clamps against active display geometry so windows/cursors are never lost off-screen.
     public func targetOrigin(
+        deviceID: String? = nil,
         for orientation: MirooOrientation,
         mirooSize: CGSize,
         referenceBounds explicitRef: CGRect? = nil,
@@ -351,11 +392,10 @@ public final class DisplayArrangementStore: @unchecked Sendable {
             refBounds = CGRect(x: 0, y: 0, width: 1440, height: 900)
         }
 
-
         // Cross-orientation inheritance: if no arrangement saved for current orientation,
         // inherit docking edge from the opposite orientation if the user previously arranged it.
         let oppositeOri: MirooOrientation = (orientation == .portrait) ? .landscape : .portrait
-        let savedRelationship = loadArrangement(for: orientation) ?? loadArrangement(for: oppositeOri)
+        let savedRelationship = loadArrangement(forDeviceID: deviceID, orientation: orientation) ?? loadArrangement(forDeviceID: deviceID, orientation: oppositeOri)
 
         guard let saved = savedRelationship else {
             // Default first-connection arrangement: immediately to the right of the reference display, top-aligned

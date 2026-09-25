@@ -20,7 +20,8 @@ let package = Package(
         .executable(name: "EdgeToEdgeTests", targets: ["EdgeToEdgeTests"]),
         .executable(name: "Phase12Tests", targets: ["Phase12Tests"]),
         .executable(name: "DisplayArrangementTests", targets: ["DisplayArrangementTests"]),
-        .executable(name: "DeviceDiscoveryConnectionTests", targets: ["DeviceDiscoveryConnectionTests"])
+        .executable(name: "DeviceDiscoveryConnectionTests", targets: ["DeviceDiscoveryConnectionTests"]),
+        .executable(name: "Phase13Tests", targets: ["Phase13Tests"])
     ],
     targets: [
         .target(
@@ -31,6 +32,9 @@ let package = Package(
         ),
         .target(
             name: "MirooNetworking",
+            dependencies: [
+                "CGVirtualDisplayBridge"
+            ],
             path: "MirooMac/Networking",
             sources: [
                 "MirooProtocol.swift",
@@ -53,7 +57,11 @@ let package = Package(
                 "ConnectionLifecycle.swift",
                 "DisplayArrangementStore.swift",
                 "MirooDevice.swift",
-                "ConnectionAuthorizer.swift"
+                "ConnectionAuthorizer.swift",
+                "VirtualDisplayManager.swift",
+                "DisplayStreamCapturer.swift",
+                "VideoEncoder.swift",
+                "MirooDisplaySession.swift"
             ]
         ),
         .executableTarget(
@@ -66,17 +74,16 @@ let package = Package(
             exclude: [
                 "VirtualDisplay/CGVirtualDisplayBridge.m",
                 "App/MirooMac-Bridging-Header.h",
-                "Resources/Info.plist",
+                "Resources",
                 "Networking"
             ],
             sources: [
-                "VirtualDisplay/VirtualDisplayManager.swift",
-                "Capture/DisplayStreamCapturer.swift",
-                "Encoder/VideoEncoder.swift",
                 "App/MirooApprovalWindow.swift",
                 "App/MirooEngine.swift",
                 "App/MirooSettingsView.swift",
                 "App/MirooMenuBarController.swift",
+                "App/MirooDashboardView.swift",
+                "App/MirooDashboardWindowController.swift",
                 "App/MirooMacApp.swift"
             ]
         ),
@@ -109,6 +116,7 @@ let package = Package(
                 "Phase9Tests.swift",
                 "Phase10Tests.swift",
                 "Phase11Tests.swift",
+                "Phase13Tests.swift",
                 "main.swift",
                 "EdgeToEdgeTests.swift",
                 "Phase12Tests.swift"
@@ -136,6 +144,7 @@ let package = Package(
                 "Phase9Tests.swift",
                 "Phase10Tests.swift",
                 "Phase11Tests.swift",
+                "Phase13Tests.swift",
                 "main.swift",
                 "EdgeToEdgeTests.swift",
                 "Phase12Tests.swift"
@@ -163,6 +172,7 @@ let package = Package(
                 "Phase9Tests.swift",
                 "Phase10Tests.swift",
                 "Phase11Tests.swift",
+                "Phase13Tests.swift",
                 "main.swift",
                 "EdgeToEdgeTests.swift",
                 "Phase12Tests.swift"
@@ -190,6 +200,7 @@ let package = Package(
                 "Phase9Tests.swift",
                 "Phase10Tests.swift",
                 "Phase11Tests.swift",
+                "Phase13Tests.swift",
                 "main.swift",
                 "EdgeToEdgeTests.swift",
                 "Phase12Tests.swift"
@@ -217,6 +228,7 @@ let package = Package(
                 "Phase9Tests.swift",
                 "Phase10Tests.swift",
                 "Phase11Tests.swift",
+                "Phase13Tests.swift",
                 "main.swift",
                 "EdgeToEdgeTests.swift",
                 "Phase12Tests.swift"
@@ -244,6 +256,7 @@ let package = Package(
                 "Phase8BTests.swift",
                 "Phase10Tests.swift",
                 "Phase11Tests.swift",
+                "Phase13Tests.swift",
                 "main.swift",
                 "EdgeToEdgeTests.swift",
                 "Phase12Tests.swift"
@@ -271,6 +284,7 @@ let package = Package(
                 "Phase8BTests.swift",
                 "Phase9Tests.swift",
                 "Phase11Tests.swift",
+                "Phase13Tests.swift",
                 "main.swift",
                 "EdgeToEdgeTests.swift",
                 "Phase12Tests.swift"
@@ -298,6 +312,7 @@ let package = Package(
                 "Phase8BTests.swift",
                 "Phase9Tests.swift",
                 "Phase10Tests.swift",
+                "Phase13Tests.swift",
                 "main.swift",
                 "EdgeToEdgeTests.swift",
                 "Phase12Tests.swift"
@@ -327,6 +342,7 @@ let package = Package(
                 "Phase10Tests.swift",
                 "Phase11Tests.swift",
                 "Phase12Tests.swift",
+                "Phase13Tests.swift",
                 "main.swift"
             ],
             sources: [
@@ -354,6 +370,7 @@ let package = Package(
                 "EdgeToEdgeTests.swift",
                 "DisplayArrangementTests.swift",
                 "DeviceDiscoveryConnectionTests.swift",
+                "Phase13Tests.swift",
                 "main.swift"
             ],
             sources: [
@@ -381,6 +398,7 @@ let package = Package(
                 "EdgeToEdgeTests.swift",
                 "Phase12Tests.swift",
                 "DeviceDiscoveryConnectionTests.swift",
+                "Phase13Tests.swift",
                 "main.swift"
             ],
             sources: [
@@ -408,10 +426,40 @@ let package = Package(
                 "EdgeToEdgeTests.swift",
                 "Phase12Tests.swift",
                 "DisplayArrangementTests.swift",
+                "Phase13Tests.swift",
                 "main.swift"
             ],
             sources: [
                 "DeviceDiscoveryConnectionTests.swift"
+            ]
+        ),
+        .executableTarget(
+            name: "Phase13Tests",
+            dependencies: [
+                "CGVirtualDisplayBridge",
+                "MirooNetworking"
+            ],
+            path: "Tests",
+            exclude: [
+                "DecodeReconnectionTest",
+                "IntegrationTest",
+                "MovingContentTest.swift",
+                "Phase6ATests.swift",
+                "Phase6BTests.swift",
+                "Phase7Tests.swift",
+                "Phase8ATests.swift",
+                "Phase8BTests.swift",
+                "Phase9Tests.swift",
+                "Phase10Tests.swift",
+                "Phase11Tests.swift",
+                "EdgeToEdgeTests.swift",
+                "Phase12Tests.swift",
+                "DisplayArrangementTests.swift",
+                "DeviceDiscoveryConnectionTests.swift",
+                "main.swift"
+            ],
+            sources: [
+                "Phase13Tests.swift"
             ]
         )
     ]

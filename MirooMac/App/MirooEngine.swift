@@ -15,6 +15,7 @@ import VideoToolbox
 import ScreenCaptureKit
 import ServiceManagement
 import Combine
+import Network
 #if canImport(MirooNetworking)
 import MirooNetworking
 #endif
@@ -63,13 +64,37 @@ public final class MirooEngine: ObservableObject {
     private var usbAttachedSerialMap: [UInt32: String] = [:]
     @Published public private(set) var nearbyPhones: [MirooDevice] = []
 
+    // MARK: - Multi-Device Sessions (Phase 13)
+    @Published public private(set) var activeSessions: [String: MirooDisplaySession] = [:]
+    @Published public private(set) var sessions: [MirooDisplaySession] = []
+    @Published public var selectedDeviceIDs: Set<String> = []
+
     // MARK: - Core Components
 
-    public private(set) var displayManager: VirtualDisplayManager?
-    public private(set) var capturer: DisplayStreamCapturer?
-    public private(set) var encoder: VideoEncoder?
+    public var displayManager: VirtualDisplayManager? {
+        get { sessions.first?.displayManager ?? _fallbackDisplayManager }
+        set { _fallbackDisplayManager = newValue }
+    }
+    private var _fallbackDisplayManager: VirtualDisplayManager?
+
+    public var capturer: DisplayStreamCapturer? {
+        get { sessions.first?.capturer ?? _fallbackCapturer }
+        set { _fallbackCapturer = newValue }
+    }
+    private var _fallbackCapturer: DisplayStreamCapturer?
+
+    public var encoder: VideoEncoder? {
+        get { sessions.first?.encoder ?? _fallbackEncoder }
+        set { _fallbackEncoder = newValue }
+    }
+    private var _fallbackEncoder: VideoEncoder?
+
     public private(set) var server: MirooServer?
-    public private(set) var inputController: MacInputController?
+    public var inputController: MacInputController? {
+        get { sessions.first?.inputController ?? _fallbackInputController }
+        set { _fallbackInputController = newValue }
+    }
+    private var _fallbackInputController: MacInputController?
 
     private var telemetryTimer: Timer?
     private var isSwitchingOrientation = false
@@ -133,18 +158,48 @@ public final class MirooEngine: ObservableObject {
 
     public func connect(to device: MirooDevice) {
         print("[MirooEngine] User requested connection to \(device.displayName)...")
-        if device.isUSBAvailable {
-            server?.startUSBMonitoring()
+        Task { @MainActor in
+            await self.extendDisplay(to: [device])
         }
+    }
+
+    public func toggleSelection(for deviceID: String) {
+        if selectedDeviceIDs.contains(deviceID) {
+            selectedDeviceIDs.remove(deviceID)
+        } else {
+            selectedDeviceIDs.insert(deviceID)
+        }
+    }
+
+    public func selectAllDevices() {
+        selectedDeviceIDs = Set(nearbyPhones.map { $0.id })
+    }
+
+    public func deselectAllDevices() {
+        selectedDeviceIDs.removeAll()
     }
 
     public func disconnectClient() {
         print("[MirooEngine] Disconnecting active client...")
         server?.disconnectActiveConnection()
-        isClientConnected = false
-        connectedClientName = nil
-        activeTransport = "None"
-        statusMessage = "Waiting for iPhone..."
+        stopDisplaySession(reason: .userDisconnected)
+    }
+
+    public func stopSession(for deviceID: String) {
+        if let session = activeSessions.removeValue(forKey: deviceID) {
+            session.stop(reason: .userDisconnected)
+            sessions = Array(activeSessions.values)
+            if activeSessions.isEmpty {
+                isClientConnected = false
+                connectedClientName = nil
+                activeTransport = "None"
+                statusMessage = "Miroo Running — Waiting for iPhone"
+            }
+        }
+    }
+
+    public func switchTransport(for deviceID: String, to transport: VideoTransportType) {
+        activeSessions[deviceID]?.switchTransport(to: transport)
     }
 
     // MARK: - Lifecycle Controls
@@ -344,6 +399,9 @@ public final class MirooEngine: ObservableObject {
         let targetWidth = request.preferredWidth > 0 ? request.preferredWidth : Int(VirtualDisplayManager.physicalWidth)
         let targetHeight = request.preferredHeight > 0 ? request.preferredHeight : Int(VirtualDisplayManager.physicalHeight)
 
+        let isUSB = (request.preferredTransport.uppercased() == "USB" || server?.currentTransportType == .usb)
+        let negotiatedTransport: VideoTransportType = isUSB ? .usb : (preferredTransport == "udp" ? .udp : .tcp)
+
         // 1. Send CONNECTION_ACCEPTED
         let accepted = ConnectionAcceptedPayload(
             sessionID: request.sessionID,
@@ -353,7 +411,7 @@ public final class MirooEngine: ObservableObject {
             height: targetHeight,
             targetFPS: targetFPS,
             scale: 2.0,
-            selectedTransport: server?.currentTransportType.rawValue ?? "TCP",
+            selectedTransport: negotiatedTransport.rawValue,
             udpPort: server?.udpPort ?? 51042,
             sessionToken: server?.udpSessionToken ?? 0
         )
@@ -362,133 +420,174 @@ public final class MirooEngine: ObservableObject {
         // 2. Send SESSION_STARTING
         connection.send(message: .sessionStarting(SessionStartingPayload(sessionID: request.sessionID)))
 
-        // 3. Allocate Virtual Display
-        let manager = VirtualDisplayManager()
-        self.displayManager = manager
+        // 3. Create or reuse MirooDevice model
+        let dev = MirooDevice(
+            id: request.clientID,
+            deviceType: .iphone,
+            displayName: request.clientName,
+            modelName: request.clientModel,
+            osVersion: nil,
+            isUSBAvailable: isUSB,
+            isWiFiAvailable: !isUSB,
+            availability: .connected,
+            lastSeen: Date()
+        )
 
-        guard manager.create() else {
-            print("[MirooEngine] ERROR: Failed to create virtual display.")
-            statusMessage = "Error: Failed to create virtual display"
+        // Stop existing session for this device if already running
+        if let existing = activeSessions[request.clientID] {
+            existing.stop(reason: .userDisconnected)
+        }
+
+        let session = MirooDisplaySession(
+            device: dev,
+            sessionID: request.sessionID,
+            width: targetWidth,
+            height: targetHeight,
+            targetFPS: targetFPS,
+            targetBitrateMbps: targetBitrateMbps,
+            preferredTransport: negotiatedTransport
+        )
+
+        session.onSessionTerminated = { [weak self] sessionID, reason in
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                self.activeSessions.removeValue(forKey: dev.id)
+                self.sessions = Array(self.activeSessions.values)
+                if self.activeSessions.isEmpty {
+                    self.isClientConnected = false
+                    self.connectedClientName = nil
+                    self.activeTransport = "None"
+                    self.statusMessage = "Miroo Running — Waiting for iPhone"
+                }
+            }
+        }
+
+        do {
+            try await session.start(
+                connection: connection,
+                negotiatedTransport: negotiatedTransport,
+                udpPort: server?.udpPort ?? 51042,
+                udpSessionToken: server?.udpSessionToken ?? 0
+            )
+
+            // Send SESSION_STARTED, DISPLAY_INFO, and STREAM_CONFIG
+            connection.send(message: .sessionStarted(SessionStartedPayload(sessionID: request.sessionID, width: targetWidth, height: targetHeight)))
+            let displayMsg = MirooMessage.displayInfo(width: targetWidth, height: targetHeight, scaleFactor: 2.0, name: "Miroo - \(request.clientName)")
+            let streamMsg = MirooMessage.streamConfig(
+                codec: "H264",
+                width: targetWidth,
+                height: targetHeight,
+                fps: targetFPS,
+                bitrate: targetBitrateMbps * 1_000_000,
+                orientation: session.currentOrientation,
+                transport: negotiatedTransport.rawValue,
+                udpPort: server?.udpPort ?? 51042,
+                sessionToken: server?.udpSessionToken ?? 0,
+                serverHost: nil
+            )
+            connection.send(message: displayMsg)
+            connection.send(message: streamMsg)
+
+            self.activeSessions[dev.id] = session
+            self.sessions = Array(self.activeSessions.values)
+            self.isClientConnected = true
+            self.connectedClientName = request.clientName
+            self.activeTransport = negotiatedTransport.rawValue
+            self.statusMessage = "Streaming to \(request.clientName)"
+            print("[MirooEngine] Display session active and streaming to \(request.clientName)!")
+        } catch {
+            print("[MirooEngine] ERROR: Failed to start session: \(error)")
+            statusMessage = "Error: Failed to create virtual display for \(request.clientName)"
             connection.send(message: .connectionRejected(
                 ConnectionRejectedPayload(sessionID: request.sessionID, reasonCode: .unsupportedCapabilities, reasonMessage: "Failed to create virtual display on Mac.")
             ))
             connection.disconnect()
-            stopDisplaySession(reason: .shutdown)
-            return
+        }
+    }
+
+    /// Extends display to multiple selected iPhones (Part 4, 5, 11).
+    public func extendDisplay(to devices: [MirooDevice]) async {
+        if !isRunning {
+            do {
+                try await start()
+            } catch {
+                print("[MirooEngine] Failed to start engine: \(error)")
+                return
+            }
         }
 
-        let displayID = manager.displayID
-        self.activeWidth = targetWidth
-        self.activeHeight = targetHeight
-        self.currentOrientation = manager.currentOrientation
-        manager.restoreSavedArrangement()
+        for dev in devices {
+            if activeSessions[dev.id] != nil {
+                print("[MirooEngine] Device \(dev.displayName) already active; skipping.")
+                continue
+            }
 
-        // 4. Initialize Hardware VideoEncoder
-        let encoder = VideoEncoder(
-            width: Int32(targetWidth),
-            height: Int32(targetHeight),
-            targetFPS: Int32(targetFPS),
-            averageBitrate: Int32(targetBitrateMbps * 1_000_000),
-            keyframeInterval: 180
-        )
-        self.encoder = encoder
+            statusMessage = "Connecting to \(dev.displayName)..."
+            print("[MirooEngine] Extending display to \(dev.displayName) (USB: \(dev.isUSBAvailable), Wi-Fi: \(dev.isWiFiAvailable))...")
 
-        do {
-            try encoder.setup()
-        } catch {
-            print("[MirooEngine] ERROR: Video encoder setup failed: \(error.localizedDescription)")
-            statusMessage = "Error: Video encoder setup failed"
-            connection.disconnect()
-            stopDisplaySession(reason: .shutdown)
-            return
+            let targetEndpoint: NWEndpoint?
+            let transport: VideoTransportType
+            if dev.isUSBAvailable {
+                targetEndpoint = .hostPort(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: 51065)!)
+                transport = .usb
+            } else if let ep = browser.endpoint(for: dev.id) {
+                targetEndpoint = ep
+                transport = (preferredTransport == "udp") ? .udp : .tcp
+            } else {
+                print("[MirooEngine] No endpoint found for \(dev.displayName)")
+                continue
+            }
+
+            guard let endpoint = targetEndpoint else { continue }
+
+            let conn = MirooConnection(to: endpoint, queue: DispatchQueue(label: "com.miroo.client.\(dev.id)", qos: .userInteractive))
+
+            conn.onStateChanged = { [weak self, weak conn] (state: MirooConnectionState) in
+                guard let self = self, let conn = conn else { return }
+                if state == .connected {
+                    print("[MirooEngine] Connected to \(dev.displayName)! Initiating display session...")
+                    Task { @MainActor in
+                        let sID = UUID().uuidString
+                        let req = ConnectionRequestPayload(
+                            clientID: dev.id,
+                            clientName: dev.displayName,
+                            clientModel: dev.modelName,
+                            protocolVersion: Int(MirooHeader.currentVersion),
+                            preferredWidth: Int(VirtualDisplayManager.physicalWidth),
+                            preferredHeight: Int(VirtualDisplayManager.physicalHeight),
+                            preferredFPS: self.targetFPS,
+                            preferredTransport: transport.rawValue,
+                            sessionID: sID
+                        )
+                        await self.startDisplaySession(for: req, connection: conn)
+                    }
+                }
+            }
+
+            conn.start()
         }
-
-        encoder.onEncodedFrame = { [weak self] data, pts, isKeyframe, captureNs, encStartNs, encCompNs, encodeDurationUs in
-            guard let self = self, !self.isStreamingPaused else { return }
-            self.server?.enqueueFrame(
-                data: data,
-                pts: pts,
-                isKeyframe: isKeyframe,
-                captureTimestampNs: captureNs,
-                encodeStartNs: encStartNs,
-                encodeCompleteNs: encCompNs,
-                encodeDurationUs: encodeDurationUs
-            )
-        }
-
-        // 5. Initialize DisplayStreamCapturer
-        let capturer = DisplayStreamCapturer()
-        self.capturer = capturer
-
-        capturer.onFrameCaptured = { [weak self] pixelBuffer, presentationTime, captureTimestampNs in
-            guard let self = self, !self.isStreamingPaused else { return }
-            let forceKey = self.server?.frameQueue.needsImmediateKeyframe ?? false
-            self.encoder?.encode(
-                pixelBuffer: pixelBuffer,
-                presentationTime: presentationTime,
-                captureTimestampNs: captureTimestampNs,
-                forceKeyframe: forceKey
-            )
-        }
-
-        do {
-            try await capturer.startCapture(
-                displayID: displayID,
-                displayName: VirtualDisplayManager.defaultDisplayName,
-                targetWidth: targetWidth,
-                targetHeight: targetHeight,
-                targetFPS: targetFPS
-            )
-        } catch {
-            print("[MirooEngine] ERROR: Screen capture failed: \(error.localizedDescription)")
-            statusMessage = "Error: Screen capture failed"
-            connection.disconnect()
-            stopDisplaySession(reason: .shutdown)
-            return
-        }
-
-        // 6. Send SESSION_STARTED
-        connection.send(message: .sessionStarted(SessionStartedPayload(sessionID: request.sessionID, width: targetWidth, height: targetHeight)))
-
-        // 7. Send DISPLAY_INFO & STREAM_CONFIG
-        let displayMsg = MirooMessage.displayInfo(width: targetWidth, height: targetHeight, scaleFactor: 2.0, name: "Miroo Extended iPhone")
-        let streamMsg = MirooMessage.streamConfig(
-            codec: "H264",
-            width: targetWidth,
-            height: targetHeight,
-            fps: targetFPS,
-            bitrate: targetBitrateMbps * 1_000_000,
-            orientation: (targetWidth > targetHeight) ? .landscape : .portrait,
-            transport: server?.currentTransportType.rawValue ?? "TCP",
-            udpPort: server?.udpPort ?? 51042,
-            sessionToken: server?.udpSessionToken ?? 0,
-            serverHost: nil
-        )
-        connection.send(message: displayMsg)
-        connection.send(message: streamMsg)
-
-        // 8. Update State
-        self.isClientConnected = true
-        self.connectedClientName = request.clientName
-        self.updateActiveTransport()
-        self.statusMessage = "Streaming to \(request.clientName)"
-        print("[MirooEngine] Display session active and streaming to \(request.clientName)!")
     }
 
     /// Stops display session, releases encoder and capturer, and destroys virtual display cleanly.
     public func stopDisplaySession(reason: SessionEndReason = .userDisconnected) {
         print("[MirooEngine] Stopping display session (reason: \(reason.rawValue))...")
 
+        for sess in activeSessions.values {
+            sess.stop(reason: reason)
+        }
+        activeSessions.removeAll()
+        sessions.removeAll()
+
         inputController?.releaseAllButtons()
 
-        capturer?.stopCaptureSync()
-        capturer = nil
+        _fallbackCapturer?.stopCaptureSync()
+        _fallbackCapturer = nil
 
-        encoder?.invalidate()
-        encoder = nil
+        _fallbackEncoder?.invalidate()
+        _fallbackEncoder = nil
 
-        displayManager?.destroy()
-        displayManager = nil
+        _fallbackDisplayManager?.destroy()
+        _fallbackDisplayManager = nil
 
         isClientConnected = false
         connectedClientName = nil

@@ -11,9 +11,6 @@ import CoreVideo
 import VideoToolbox
 import QuartzCore
 import os.lock
-#if canImport(MirooNetworking)
-import MirooNetworking
-#endif
 
 public enum VideoEncoderError: LocalizedError {
     case sessionCreationFailed(OSStatus)
