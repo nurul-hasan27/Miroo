@@ -145,6 +145,14 @@ final class ReceiverViewModel: ObservableObject {
                     self?.transportType = transport.rawValue
                     self?.connectedHost = target
 
+                case .waitingForApproval(let host):
+                    self?.connectedHost = host
+
+                case .declined(let host, _):
+                    self?.errorMessage = "\(host) declined this display request."
+                    self?.isStreaming = false
+                    self?.decoder.invalidate()
+
                 case .error(let message):
                     self?.errorMessage = message
                     self?.isStreaming = false

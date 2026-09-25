@@ -16,7 +16,9 @@ public enum ConnectionLifecycleState: Equatable, Sendable, CustomStringConvertib
     case idle
     case searching
     case connecting(target: String, transport: VideoTransportType)
+    case waitingForApproval(host: String)
     case connected(host: String, transport: VideoTransportType)
+    case declined(host: String, reason: String)
     case reconnecting(reason: String, attempt: Int)
     case disconnected(reason: String?)
     case error(message: String)
@@ -28,6 +30,17 @@ public enum ConnectionLifecycleState: Equatable, Sendable, CustomStringConvertib
 
     public var isConnecting: Bool {
         if case .connecting = self { return true }
+        if case .waitingForApproval = self { return true }
+        return false
+    }
+
+    public var isWaitingForApproval: Bool {
+        if case .waitingForApproval = self { return true }
+        return false
+    }
+
+    public var isDeclined: Bool {
+        if case .declined = self { return true }
         return false
     }
 
@@ -44,7 +57,9 @@ public enum ConnectionLifecycleState: Equatable, Sendable, CustomStringConvertib
     public var activeHost: String? {
         switch self {
         case .connecting(let target, _): return target
+        case .waitingForApproval(let host): return host
         case .connected(let host, _): return host
+        case .declined(let host, _): return host
         default: return nil
         }
     }
@@ -65,8 +80,12 @@ public enum ConnectionLifecycleState: Equatable, Sendable, CustomStringConvertib
             return "Searching for Mac..."
         case .connecting(let target, let transport):
             return "Connecting to \(target) (\(transport.rawValue))..."
+        case .waitingForApproval(let host):
+            return "Waiting for approval from \(host)..."
         case .connected(let host, let transport):
             return "Connected to \(host) (\(transport.rawValue))"
+        case .declined(let host, let reason):
+            return "Connection declined by \(host): \(reason)"
         case .reconnecting(let reason, let attempt):
             return "Reconnecting (\(reason), attempt \(attempt))..."
         case .disconnected(let reason):
@@ -84,8 +103,12 @@ public enum ConnectionLifecycleState: Equatable, Sendable, CustomStringConvertib
             return "Looking for your Mac..."
         case .connecting(let target, _):
             return "Connecting to \(target)..."
+        case .waitingForApproval(let host):
+            return "Waiting for \(host) to accept..."
         case .connected(let host, let transport):
             return "\(host) · \(transport.rawValue)"
+        case .declined(let host, _):
+            return "\(host) declined this display request."
         case .reconnecting(let reason, _):
             return "Connection interrupted (\(reason)). Reconnecting..."
         case .disconnected:
@@ -235,19 +258,31 @@ public final class ConnectionStateMachine: @unchecked Sendable {
         switch from {
         case .idle:
             switch to {
-            case .searching, .connecting, .disconnected, .error: return true
+            case .searching, .connecting, .waitingForApproval, .disconnected, .error: return true
             default: return false
             }
 
         case .searching:
             switch to {
-            case .connecting, .idle, .disconnected, .error: return true
+            case .connecting, .waitingForApproval, .idle, .disconnected, .error: return true
             default: return false
             }
 
         case .connecting:
             switch to {
-            case .connected, .reconnecting, .disconnected, .error, .searching: return true
+            case .waitingForApproval, .connected, .declined, .reconnecting, .disconnected, .error, .searching: return true
+            default: return false
+            }
+
+        case .waitingForApproval:
+            switch to {
+            case .connected, .declined, .disconnected, .error, .searching, .connecting, .idle: return true
+            default: return false
+            }
+
+        case .declined:
+            switch to {
+            case .searching, .connecting, .idle, .disconnected, .error: return true
             default: return false
             }
 
@@ -259,7 +294,7 @@ public final class ConnectionStateMachine: @unchecked Sendable {
 
         case .reconnecting:
             switch to {
-            case .connecting, .connected, .reconnecting, .disconnected, .error, .searching: return true
+            case .connecting, .waitingForApproval, .connected, .declined, .reconnecting, .disconnected, .error, .searching: return true
             default: return false
             }
 

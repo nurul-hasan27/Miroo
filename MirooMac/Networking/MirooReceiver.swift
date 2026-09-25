@@ -238,6 +238,7 @@ public final class MirooReceiver: @unchecked Sendable {
                         sessionID: sID
                     )
                     conn.send(message: .connectionRequest(req))
+                    _ = self.lifecycle.transition(to: .waitingForApproval(host: self.activeHostName ?? "Mac"))
                 }
             }
 
@@ -385,12 +386,13 @@ public final class MirooReceiver: @unchecked Sendable {
             if let accepted = message.decodeConnectionAccepted() {
                 print("[Miroo Receiver] Connection accepted by Mac '\(accepted.hostName)' (session: \(accepted.sessionID))")
                 self.activeHostName = accepted.hostName
+                _ = self.lifecycle.transition(to: .connected(host: accepted.hostName, transport: self.currentTransportType))
             }
 
         case .connectionRejected:
             if let rejected = message.decodeConnectionRejected() {
                 print("[Miroo Receiver] Connection rejected by Mac: \(rejected.reasonCode.rawValue) - \(rejected.reasonMessage)")
-                _ = self.lifecycle.transition(to: .error(message: rejected.reasonMessage))
+                _ = self.lifecycle.transition(to: .declined(host: self.activeHostName ?? "Mac", reason: rejected.reasonMessage))
                 self.connection?.disconnect()
             }
 
