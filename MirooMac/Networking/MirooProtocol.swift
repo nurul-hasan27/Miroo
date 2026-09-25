@@ -26,6 +26,13 @@ public enum MirooMessageType: UInt8, Sendable, CustomStringConvertible {
     case keyframeRequest    = 14
     case setTransport       = 15
     case adaptiveFeedback   = 16
+    case connectionRequest   = 17
+    case connectionAccepted  = 18
+    case connectionRejected  = 19
+    case connectionCancelled = 20
+    case sessionStarting     = 21
+    case sessionStarted      = 22
+    case sessionEnded        = 23
 
     public var description: String {
         switch self {
@@ -45,6 +52,13 @@ public enum MirooMessageType: UInt8, Sendable, CustomStringConvertible {
         case .keyframeRequest:    return "KEYFRAME_REQUEST"
         case .setTransport:       return "SET_TRANSPORT"
         case .adaptiveFeedback:   return "ADAPTIVE_FEEDBACK"
+        case .connectionRequest:   return "CONNECTION_REQUEST"
+        case .connectionAccepted:  return "CONNECTION_ACCEPTED"
+        case .connectionRejected:  return "CONNECTION_REJECTED"
+        case .connectionCancelled: return "CONNECTION_CANCELLED"
+        case .sessionStarting:     return "SESSION_STARTING"
+        case .sessionStarted:      return "SESSION_STARTED"
+        case .sessionEnded:        return "SESSION_ENDED"
         }
     }
 }
@@ -345,6 +359,153 @@ public struct GoodbyePayload: Codable, Sendable {
 
     public init(reason: String) {
         self.reason = reason
+    }
+}
+
+// MARK: - Connection & Session Authorization Payloads (Phase 13)
+
+public enum ConnectionRejectionReason: String, Codable, Sendable {
+    case userRejected
+    case busy
+    case versionMismatch
+    case unsupportedCapabilities
+    case timeout
+}
+
+public struct ConnectionRequestPayload: Codable, Sendable, Equatable {
+    public let clientID: String
+    public let clientName: String
+    public let clientModel: String
+    public let protocolVersion: Int
+    public let preferredWidth: Int
+    public let preferredHeight: Int
+    public let preferredFPS: Int
+    public let preferredTransport: String
+    public let sessionID: String
+
+    public init(
+        clientID: String,
+        clientName: String,
+        clientModel: String,
+        protocolVersion: Int = 1,
+        preferredWidth: Int = 1170,
+        preferredHeight: Int = 2532,
+        preferredFPS: Int = 60,
+        preferredTransport: String = "auto",
+        sessionID: String = UUID().uuidString
+    ) {
+        self.clientID = clientID
+        self.clientName = clientName
+        self.clientModel = clientModel
+        self.protocolVersion = protocolVersion
+        self.preferredWidth = preferredWidth
+        self.preferredHeight = preferredHeight
+        self.preferredFPS = preferredFPS
+        self.preferredTransport = preferredTransport
+        self.sessionID = sessionID
+    }
+}
+
+public struct ConnectionAcceptedPayload: Codable, Sendable, Equatable {
+    public let sessionID: String
+    public let hostID: String
+    public let hostName: String
+    public let width: Int
+    public let height: Int
+    public let targetFPS: Int
+    public let scale: Double
+    public let selectedTransport: String
+    public let udpPort: UInt16
+    public let sessionToken: UInt32
+
+    public init(
+        sessionID: String,
+        hostID: String,
+        hostName: String,
+        width: Int,
+        height: Int,
+        targetFPS: Int = 60,
+        scale: Double = 2.0,
+        selectedTransport: String = "TCP",
+        udpPort: UInt16 = 51042,
+        sessionToken: UInt32 = 0
+    ) {
+        self.sessionID = sessionID
+        self.hostID = hostID
+        self.hostName = hostName
+        self.width = width
+        self.height = height
+        self.targetFPS = targetFPS
+        self.scale = scale
+        self.selectedTransport = selectedTransport
+        self.udpPort = udpPort
+        self.sessionToken = sessionToken
+    }
+}
+
+public struct ConnectionRejectedPayload: Codable, Sendable, Equatable {
+    public let sessionID: String
+    public let reasonCode: ConnectionRejectionReason
+    public let reasonMessage: String
+
+    public init(
+        sessionID: String,
+        reasonCode: ConnectionRejectionReason,
+        reasonMessage: String
+    ) {
+        self.sessionID = sessionID
+        self.reasonCode = reasonCode
+        self.reasonMessage = reasonMessage
+    }
+}
+
+public struct ConnectionCancelledPayload: Codable, Sendable, Equatable {
+    public let sessionID: String
+    public let reason: String
+
+    public init(sessionID: String, reason: String = "userCancelled") {
+        self.sessionID = sessionID
+        self.reason = reason
+    }
+}
+
+public struct SessionStartingPayload: Codable, Sendable, Equatable {
+    public let sessionID: String
+
+    public init(sessionID: String) {
+        self.sessionID = sessionID
+    }
+}
+
+public struct SessionStartedPayload: Codable, Sendable, Equatable {
+    public let sessionID: String
+    public let width: Int
+    public let height: Int
+
+    public init(sessionID: String, width: Int, height: Int) {
+        self.sessionID = sessionID
+        self.width = width
+        self.height = height
+    }
+}
+
+public enum SessionEndReason: String, Codable, Sendable {
+    case userDisconnected
+    case cableUnplugged
+    case timeout
+    case sleep
+    case shutdown
+}
+
+public struct SessionEndedPayload: Codable, Sendable, Equatable {
+    public let sessionID: String
+    public let reason: SessionEndReason
+    public let message: String?
+
+    public init(sessionID: String, reason: SessionEndReason, message: String? = nil) {
+        self.sessionID = sessionID
+        self.reason = reason
+        self.message = message
     }
 }
 
@@ -779,6 +940,64 @@ extension MirooMessage {
 
     public func decodePayload<T: Decodable>(_ type: T.Type) -> T? {
         try? JSONDecoder().decode(type, from: payload)
+    }
+
+    // MARK: - Phase 13 Connection Request Protocol Helpers
+
+    public static func connectionRequest(_ payload: ConnectionRequestPayload) -> MirooMessage {
+        MirooMessage(type: .connectionRequest, payload: (try? JSONEncoder().encode(payload)) ?? Data())
+    }
+
+    public static func connectionAccepted(_ payload: ConnectionAcceptedPayload) -> MirooMessage {
+        MirooMessage(type: .connectionAccepted, payload: (try? JSONEncoder().encode(payload)) ?? Data())
+    }
+
+    public static func connectionRejected(_ payload: ConnectionRejectedPayload) -> MirooMessage {
+        MirooMessage(type: .connectionRejected, payload: (try? JSONEncoder().encode(payload)) ?? Data())
+    }
+
+    public static func connectionCancelled(_ payload: ConnectionCancelledPayload) -> MirooMessage {
+        MirooMessage(type: .connectionCancelled, payload: (try? JSONEncoder().encode(payload)) ?? Data())
+    }
+
+    public static func sessionStarting(_ payload: SessionStartingPayload) -> MirooMessage {
+        MirooMessage(type: .sessionStarting, payload: (try? JSONEncoder().encode(payload)) ?? Data())
+    }
+
+    public static func sessionStarted(_ payload: SessionStartedPayload) -> MirooMessage {
+        MirooMessage(type: .sessionStarted, payload: (try? JSONEncoder().encode(payload)) ?? Data())
+    }
+
+    public static func sessionEnded(_ payload: SessionEndedPayload) -> MirooMessage {
+        MirooMessage(type: .sessionEnded, payload: (try? JSONEncoder().encode(payload)) ?? Data())
+    }
+
+    public func decodeConnectionRequest() -> ConnectionRequestPayload? {
+        decodePayload(ConnectionRequestPayload.self)
+    }
+
+    public func decodeConnectionAccepted() -> ConnectionAcceptedPayload? {
+        decodePayload(ConnectionAcceptedPayload.self)
+    }
+
+    public func decodeConnectionRejected() -> ConnectionRejectedPayload? {
+        decodePayload(ConnectionRejectedPayload.self)
+    }
+
+    public func decodeConnectionCancelled() -> ConnectionCancelledPayload? {
+        decodePayload(ConnectionCancelledPayload.self)
+    }
+
+    public func decodeSessionStarting() -> SessionStartingPayload? {
+        decodePayload(SessionStartingPayload.self)
+    }
+
+    public func decodeSessionStarted() -> SessionStartedPayload? {
+        decodePayload(SessionStartedPayload.self)
+    }
+
+    public func decodeSessionEnded() -> SessionEndedPayload? {
+        decodePayload(SessionEndedPayload.self)
     }
 }
 
