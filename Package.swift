@@ -50,7 +50,8 @@ let package = Package(
                 "USBMuxClient.swift",
                 "AdaptiveStreamingController.swift",
                 "ConnectionLifecycle.swift",
-                "DisplayArrangementStore.swift"
+                "DisplayArrangementStore.swift",
+                "MirooDevice.swift"
             ]
         ),
         .executableTarget(

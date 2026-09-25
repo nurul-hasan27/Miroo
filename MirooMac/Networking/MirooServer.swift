@@ -103,6 +103,12 @@ public final class MirooServer: @unchecked Sendable {
         txtRecord["width"] = String(width)
         txtRecord["height"] = String(height)
         txtRecord["fps"] = String(targetFPS)
+        txtRecord["type"] = "mac"
+        txtRecord["id"] = DeviceIdentity.currentID
+        txtRecord["model"] = DeviceIdentity.defaultModelName()
+        txtRecord["os"] = DeviceIdentity.currentOSVersion()
+        txtRecord["usb"] = isUSBActive ? "1" : "0"
+        txtRecord["state"] = MirooDeviceAvailability.available.rawValue
 
         newListener.service = NWListener.Service(
             name: serviceName,

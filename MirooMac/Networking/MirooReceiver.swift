@@ -82,6 +82,11 @@ public final class MirooReceiver: @unchecked Sendable {
 
     public var autoConnectOnDiscovery: Bool = false
 
+    public var discoveredMacs: [MirooDevice] {
+        browser.discoveredMacs
+    }
+    public var onDiscoveredMacsUpdated: (([MirooDevice]) -> Void)?
+
     // MARK: - Discovery & Connection
 
     public func startDiscovery() {
@@ -95,6 +100,11 @@ public final class MirooReceiver: @unchecked Sendable {
             }
 
             print("[Miroo Receiver] Starting Bonjour service discovery for '_miroo._tcp'...")
+            self.browser.onDevicesUpdated = { [weak self] devices in
+                guard let self = self else { return }
+                let macs = devices.filter { $0.deviceType == .mac }
+                self.onDiscoveredMacsUpdated?(macs)
+            }
             self.browser.onServicesUpdated = { [weak self] services in
                 guard let self = self else { return }
                 self.queue.async {
@@ -693,6 +703,22 @@ public final class MirooReceiver: @unchecked Sendable {
             params.serviceClass = .interactiveVideo
 
             let l = try NWListener(using: params, on: NWEndpoint.Port(rawValue: Self.usbPort)!)
+            var txtRecord = NWTXTRecord()
+            txtRecord["version"] = "1"
+            txtRecord["type"] = "iphone"
+            txtRecord["id"] = DeviceIdentity.currentID
+            txtRecord["name"] = clientName
+            txtRecord["model"] = DeviceIdentity.defaultModelName()
+            txtRecord["os"] = DeviceIdentity.currentOSVersion()
+            txtRecord["usb"] = isUSBActive ? "1" : "0"
+            txtRecord["state"] = MirooDeviceAvailability.available.rawValue
+
+            l.service = NWListener.Service(
+                name: clientName,
+                type: "_miroo._tcp",
+                domain: "local.",
+                txtRecord: txtRecord
+            )
             l.newConnectionHandler = { [weak self] newConn in
                 self?.handleInboundUSBConnection(newConn)
             }
