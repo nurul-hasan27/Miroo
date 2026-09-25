@@ -330,7 +330,7 @@ public final class DisplayArrangementStore: @unchecked Sendable {
         referenceBounds explicitRef: CGRect? = nil,
         activeDisplayBounds: [CGRect] = []
     ) -> CGPoint {
-        let refBounds: CGRect
+        var refBounds: CGRect
         if let explicit = explicitRef {
             refBounds = explicit
         } else {
@@ -346,7 +346,18 @@ public final class DisplayArrangementStore: @unchecked Sendable {
             #endif
         }
 
-        guard let saved = loadArrangement(for: orientation) else {
+        // Validate reference dimensions to prevent division by zero, negative, or degenerate bounds
+        if refBounds.size.width <= 100 || refBounds.size.height <= 100 || refBounds.width <= 100 || refBounds.height <= 100 {
+            refBounds = CGRect(x: 0, y: 0, width: 1440, height: 900)
+        }
+
+
+        // Cross-orientation inheritance: if no arrangement saved for current orientation,
+        // inherit docking edge from the opposite orientation if the user previously arranged it.
+        let oppositeOri: MirooOrientation = (orientation == .portrait) ? .landscape : .portrait
+        let savedRelationship = loadArrangement(for: orientation) ?? loadArrangement(for: oppositeOri)
+
+        guard let saved = savedRelationship else {
             // Default first-connection arrangement: immediately to the right of the reference display, top-aligned
             return CGPoint(x: refBounds.maxX, y: refBounds.minY)
         }
@@ -397,4 +408,5 @@ public final class DisplayArrangementStore: @unchecked Sendable {
 
         return false
     }
+
 }

@@ -383,7 +383,14 @@ public final class VirtualDisplayManager {
             if CGBeginDisplayConfiguration(&fallbackConfig) == .success, let fb = fallbackConfig {
                 CGConfigureDisplayMirrorOfDisplay(fb, id, kCGNullDirectDisplay)
                 CGConfigureDisplayOrigin(fb, id, Int32(targetOrigin.x), Int32(targetOrigin.y))
-                _ = CGCompleteDisplayConfiguration(fb, .forSession)
+                let fbErr = CGCompleteDisplayConfiguration(fb, .forSession)
+                if fbErr != .success {
+                    print("[Miroo] Fallback .forSession also failed: \(fbErr.rawValue). Cancelling configuration transaction...")
+                    CGCancelDisplayConfiguration(fb)
+                    return false
+                }
+            } else {
+                return false
             }
         }
 
