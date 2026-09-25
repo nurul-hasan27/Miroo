@@ -470,12 +470,14 @@ struct ReceiverContentView: View {
                                             .foregroundColor(.blue)
                                             .padding(.bottom, 2)
 
-                                        Text("Miroo")
-                                            .font(.system(size: isCompactHeight ? 26 : 32, weight: .bold))
+                                        Text("Connect to a Mac")
+                                            .font(.system(size: isCompactHeight ? 24 : 28, weight: .bold))
 
-                                        Text("Ultra-Low Latency Secondary Display")
+                                        Text("Choose a Mac on your network or plug in via USB.")
                                             .font(isCompactHeight ? .caption : .subheadline)
                                             .foregroundColor(.secondary)
+                                            .multilineTextAlignment(.center)
+                                            .padding(.horizontal, 24)
                                     }
                                     .padding(.top, max(topInset, 16))
 
@@ -522,7 +524,7 @@ struct ReceiverContentView: View {
                                                 ProgressView()
                                                     .scaleEffect(0.9)
                                                     .padding(.top, 10)
-                                                Text("Looking for your Mac...")
+                                                Text("Looking for Macs running Miroo...")
                                                     .font(.subheadline)
                                                     .foregroundColor(.secondary)
                                                 Text("Ensure Miroo is running on your Mac and connected via USB or Wi-Fi.")
@@ -542,37 +544,47 @@ struct ReceiverContentView: View {
                                                         viewModel.selectedHost = host
                                                     }) {
                                                         HStack(spacing: 12) {
-                                                            Image(systemName: "laptopcomputer")
-                                                                .font(.system(size: 22))
+                                                            Image(systemName: host.modelName.contains("Pro") || host.modelName.contains("mini") || host.modelName.contains("iMac") ? "desktopcomputer" : "laptopcomputer")
+                                                                .font(.system(size: 24))
                                                                 .foregroundColor(.blue)
 
-                                                            VStack(alignment: .leading, spacing: 2) {
+                                                            VStack(alignment: .leading, spacing: 3) {
                                                                 Text(host.name)
-                                                                    .font(.system(size: 15, weight: .semibold))
+                                                                    .font(.system(size: 16, weight: .bold))
                                                                     .foregroundColor(.primary)
 
-                                                                Text(host.isUSB ? "USB Connected · Ultra-Low Latency" : "Wi-Fi Network")
-                                                                    .font(.caption2)
+                                                                Text("\(host.modelName)\(host.osVersion != nil ? " · " + host.osVersion! : "")")
+                                                                    .font(.caption)
                                                                     .foregroundColor(.secondary)
                                                             }
 
                                                             Spacer()
 
-                                                            // Badge
-                                                            Text(host.isUSB ? "USB" : "Wi-Fi")
-                                                                .font(.system(size: 10, weight: .bold))
-                                                                .padding(.horizontal, 8)
-                                                                .padding(.vertical, 3)
-                                                                .background(host.isUSB ? Color.yellow.opacity(0.2) : Color.blue.opacity(0.12))
-                                                                .foregroundColor(host.isUSB ? .orange : .blue)
-                                                                .cornerRadius(6)
+                                                            // Transport Indicator Badge
+                                                            if host.isUSB {
+                                                                Text("USB Connected")
+                                                                    .font(.system(size: 10, weight: .bold))
+                                                                    .padding(.horizontal, 8)
+                                                                    .padding(.vertical, 3)
+                                                                    .background(Color.green.opacity(0.18))
+                                                                    .foregroundColor(.green)
+                                                                    .cornerRadius(6)
+                                                            } else {
+                                                                Text("Wi-Fi")
+                                                                    .font(.system(size: 10, weight: .bold))
+                                                                    .padding(.horizontal, 8)
+                                                                    .padding(.vertical, 3)
+                                                                    .background(Color.blue.opacity(0.12))
+                                                                    .foregroundColor(.blue)
+                                                                    .cornerRadius(6)
+                                                            }
 
                                                             if viewModel.selectedHost?.id == host.id {
                                                                 Image(systemName: "checkmark.circle.fill")
                                                                     .foregroundColor(.blue)
                                                             }
                                                         }
-                                                        .padding(12)
+                                                        .padding(14)
                                                         .background(Color(uiColor: .secondarySystemGroupedBackground))
                                                         .cornerRadius(12)
                                                         .overlay(
@@ -586,6 +598,27 @@ struct ReceiverContentView: View {
                                             .padding(.horizontal)
                                         }
                                     }
+
+                                    // Help Guidance Card
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        Text("Don't see your Mac?")
+                                            .font(.subheadline)
+                                            .fontWeight(.semibold)
+                                            .foregroundColor(.primary)
+
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text("• Ensure Miroo is running on your Mac")
+                                            Text("• Connect both devices to the same Wi-Fi network")
+                                            Text("• Or connect with a USB-C / Lightning cable for instant zero-configuration setup")
+                                        }
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(14)
+                                    .background(Color(uiColor: .secondarySystemGroupedBackground))
+                                    .cornerRadius(14)
+                                    .padding(.horizontal)
                                 }
                                 .padding(.bottom, 16)
                             }

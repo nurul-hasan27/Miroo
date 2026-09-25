@@ -125,6 +125,14 @@ public struct DiscoveredHost: Identifiable, Hashable, Sendable {
         hasher.combine(isUSB)
     }
 
+    public var modelName: String {
+        txtRecord["model"] ?? "Mac"
+    }
+
+    public var osVersion: String? {
+        txtRecord["os"]
+    }
+
     public static func == (lhs: DiscoveredHost, rhs: DiscoveredHost) -> Bool {
         lhs.name == rhs.name && lhs.isUSB == rhs.isUSB
     }
