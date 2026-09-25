@@ -68,6 +68,9 @@ public final class MirooDisplaySession: ObservableObject, Identifiable {
     private var targetFPS: Int
     private var targetBitrateMbps: Int
     private var isSwitchingTransport: Bool = false
+    private var lastTelemetryFramesSent: UInt64 = 0
+    private var lastTelemetryBytesSent: UInt64 = 0
+    private var lastTelemetryTime: CFTimeInterval = 0
 
     // Callbacks
     public var onSessionTerminated: ((_ sessionID: String, _ reason: SessionEndReason) -> Void)?
@@ -125,6 +128,8 @@ public final class MirooDisplaySession: ObservableObject, Identifiable {
         self.displayHeight = (manager.currentOrientation == .landscape) ? Int(VirtualDisplayManager.physicalWidth) : Int(VirtualDisplayManager.physicalHeight)
         self.currentOrientation = manager.currentOrientation
 
+        PipelineLogger.log(.virtualDisplay, "Allocated virtual display ID \(manager.displayID), bounds: \(displayWidth)x\(displayHeight)", force: true)
+
         // 2. Hardware Video Encoder
         let enc = VideoEncoder(
             width: Int32(displayWidth),
@@ -135,6 +140,7 @@ public final class MirooDisplaySession: ObservableObject, Identifiable {
         )
         self.encoder = enc
         try enc.setup()
+        PipelineLogger.log(.videoEncoder, "VideoToolbox hardware encoder initialized (\(displayWidth)x\(displayHeight) @ \(targetFPS) FPS, \(targetBitrateMbps) Mbps)", force: true)
 
         enc.onEncodedFrame = { [weak self] data, pts, isKeyframe, captureNs, encStartNs, encCompNs, encodeDurationUs in
             guard let self = self, !self.isPaused else { return }
@@ -171,6 +177,7 @@ public final class MirooDisplaySession: ObservableObject, Identifiable {
             targetHeight: displayHeight,
             targetFPS: targetFPS
         )
+        PipelineLogger.log(.displayCapture, "ScreenCaptureKit capturing display \(manager.displayID) [\(displayName)]", force: true)
 
         // 4. Configure Video Transport
         setupVideoTransport(type: negotiatedTransport, connection: connection, udpPort: udpPort, sessionToken: udpSessionToken)
@@ -181,6 +188,7 @@ public final class MirooDisplaySession: ObservableObject, Identifiable {
         self.state = .active
         startTelemetryMonitoring()
         print("[MirooDisplaySession] Session started for device '\(device.displayName)' [ID: \(device.id), Display: \(manager.displayID)] over \(activeTransportName)")
+        PipelineLogger.log(.transport, "Display session active for '\(device.displayName)' over \(activeTransportName)", force: true)
     }
 
     /// Stops this display session cleanly, tears down its virtual display, and releases capturer/encoder.
@@ -422,6 +430,9 @@ public final class MirooDisplaySession: ObservableObject, Identifiable {
         )
 
         isSending = true
+        if frame.sequence == 1 || frame.sequence % 60 == 0 {
+            print("[MirooDisplaySession] Transmitting frame #\(frame.sequence) via \(transport.transportType.rawValue) (bytes=\(frame.data.count), isKeyframe=\(frame.isKeyframe))")
+        }
         transport.sendFrame(
             sequence: frame.sequence,
             pts: frame.pts,
@@ -444,6 +455,28 @@ public final class MirooDisplaySession: ObservableObject, Identifiable {
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
                 switch message.header.messageType {
+                case .ready:
+                    print("[MirooDisplaySession] Received READY from client for session '\(self.sessionID)'. Transitioning to streaming.")
+                    conn.transitionToStreaming()
+                    self.videoTransport?.start()
+                    self.requestKeyframe()
+                    self.pumpFrameQueue()
+                case .ping:
+                    if let clientTs = message.decodePing() {
+                        let serverNow = Int64(CACurrentMediaTime() * 1_000_000_000.0)
+                        conn.send(message: .pong(clientTimestamp: clientTs, serverTimestamp: serverNow))
+                    }
+                case .adaptiveFeedback:
+                    if let feedback = message.decodePayload(AdaptiveFeedbackPayload.self) {
+                        self.rttMs = feedback.rttMs
+                        self.currentLatencyMs = max(3.0, feedback.rttMs / 2.0)
+                    }
+                case .benchmarkReport:
+                    if let report = message.decodePayload(PipelineBenchmarkReport.self) {
+                        if report.glassToRender.p50 > 0 {
+                            self.currentLatencyMs = report.glassToRender.p50
+                        }
+                    }
                 case .touchEvent:
                     if let touch = message.decodeTouchEvent() {
                         self.handleTouchEvent(touch)
@@ -486,13 +519,24 @@ public final class MirooDisplaySession: ObservableObject, Identifiable {
     }
 
     private func startTelemetryMonitoring() {
+        lastTelemetryTime = CACurrentMediaTime()
         telemetryTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
-                if let metrics = self.videoTransport?.getMetrics() {
-                    self.currentFPS = Double(metrics.framesSent)
-                    self.currentBitrateMbps = Double(metrics.bytesSent * 8) / 1_000_000.0
+                let now = CACurrentMediaTime()
+                let elapsed = now - self.lastTelemetryTime
+                if let metrics = self.videoTransport?.getMetrics(), elapsed > 0 {
+                    let dFrames = metrics.framesSent >= self.lastTelemetryFramesSent ? metrics.framesSent - self.lastTelemetryFramesSent : 0
+                    let dBytes = metrics.bytesSent >= self.lastTelemetryBytesSent ? metrics.bytesSent - self.lastTelemetryBytesSent : 0
+                    self.currentFPS = Double(dFrames) / elapsed
+                    self.currentBitrateMbps = (Double(dBytes * 8) / elapsed) / 1_000_000.0
                     self.currentLatencyMs = max(3.0, self.rttMs / 2.0)
+                    self.lastTelemetryFramesSent = metrics.framesSent
+                    self.lastTelemetryBytesSent = metrics.bytesSent
+                    self.lastTelemetryTime = now
+                    if metrics.framesSent > 0 {
+                        print("[MirooDisplaySession] Telemetry: \(String(format: "%.1f", self.currentFPS)) FPS, \(String(format: "%.2f", self.currentBitrateMbps)) Mbps, RTT: \(String(format: "%.1f", self.rttMs)) ms (Total Sent: \(metrics.framesSent))")
+                    }
                 }
             }
         }

@@ -567,7 +567,7 @@ public final class TCPVideoSenderTransport: VideoSenderTransport, @unchecked Sen
     }
 
     public func start() {
-        state = (connection?.state == .streaming) ? .streaming : .connected
+        state = .streaming
     }
 
     public func stop() {
@@ -582,8 +582,8 @@ public final class TCPVideoSenderTransport: VideoSenderTransport, @unchecked Sen
         timing: VideoFrameTiming?,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
-        guard let conn = connection, conn.state == .streaming else {
-            completion(.failure(NSError(domain: "MirooTCP", code: -1, userInfo: [NSLocalizedDescriptionKey: "TCP connection not streaming."])))
+        guard let conn = connection, (conn.state == .streaming || conn.state == .connected) else {
+            completion(.failure(NSError(domain: "MirooTCP", code: -1, userInfo: [NSLocalizedDescriptionKey: "TCP connection not streaming or connected."])))
             return
         }
 
@@ -676,7 +676,7 @@ public final class USBVideoSenderTransport: VideoSenderTransport, @unchecked Sen
     }
 
     public func start() {
-        state = (connection?.state == .streaming) ? .streaming : .connected
+        state = .streaming
     }
 
     public func stop() {
@@ -691,8 +691,8 @@ public final class USBVideoSenderTransport: VideoSenderTransport, @unchecked Sen
         timing: VideoFrameTiming?,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
-        guard let conn = connection, conn.state == .streaming else {
-            completion(.failure(NSError(domain: "MirooUSB", code: -1, userInfo: [NSLocalizedDescriptionKey: "USB connection not streaming."])))
+        guard let conn = connection, (conn.state == .streaming || conn.state == .connected) else {
+            completion(.failure(NSError(domain: "MirooUSB", code: -1, userInfo: [NSLocalizedDescriptionKey: "USB connection not streaming or connected."])))
             return
         }
 
