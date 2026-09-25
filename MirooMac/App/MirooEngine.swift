@@ -56,7 +56,8 @@ public final class MirooEngine: ObservableObject {
     }
     @Published public private(set) var statusMessage: String = "Ready"
 
-    // MARK: - Discovery
+    // MARK: - Discovery & Authorization
+    public let authorizer = ConnectionAuthorizer.shared
     public let browser = MirooBrowser()
     public let usbmux = USBMuxClient()
     private var usbAttachedSerialMap: [UInt32: String] = [:]
@@ -148,40 +149,28 @@ public final class MirooEngine: ObservableObject {
 
     // MARK: - Lifecycle Controls
 
-    /// Starts the entire Miroo pipeline (Virtual Display -> Capturer -> Encoder -> Network Server).
+    /// Starts the Miroo listening and discovery engine.
+    /// CRITICAL ARCHITECTURAL BOUNDARY: Does NOT create virtual display or initialize encoder yet.
+    /// Virtual display is strictly allocated upon explicit connection authorization.
     public func start() async throws {
         guard !isRunning else { return }
 
-        statusMessage = "Starting virtual display..."
-        print("[MirooEngine] Starting streaming engine...")
+        statusMessage = "Starting Miroo..."
+        print("[MirooEngine] Starting streaming engine in listening mode...")
 
-        // 1. Create Virtual Display
-        let manager = VirtualDisplayManager()
-        self.displayManager = manager
-
-        let success = manager.create()
-        guard success else {
-            statusMessage = "Error: Failed to create virtual display"
-            print("[MirooEngine] ERROR: Failed to create virtual display.")
-            throw NSError(domain: "com.miroo.engine", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to create virtual display"])
-        }
-
-        let displayID = manager.displayID
-        let displayName = VirtualDisplayManager.defaultDisplayName
         let targetWidth = Int(VirtualDisplayManager.physicalWidth)
         let targetHeight = Int(VirtualDisplayManager.physicalHeight)
         self.activeWidth = targetWidth
         self.activeHeight = targetHeight
-        self.currentOrientation = manager.currentOrientation
 
-        // 2. Initialize MirooServer
+        // 1. Initialize MirooServer
         let initialTransport: VideoTransportType
         if preferredTransport == "udp" {
             initialTransport = .udp
         } else if preferredTransport == "tcp" {
             initialTransport = .tcp
         } else {
-            initialTransport = .tcp // Default auto baseline; USB mux auto-connects when phone attaches
+            initialTransport = .tcp
         }
 
         let server = MirooServer(
@@ -195,12 +184,12 @@ public final class MirooEngine: ObservableObject {
         )
         self.server = server
 
-        // 3. Initialize MacInputController
+        // 2. Initialize MacInputController
         let inputController = MacInputController()
         self.inputController = inputController
 
-        server.onTouchEvent = { [weak inputController, weak manager] payload in
-            guard let inputController = inputController, let manager = manager else { return }
+        server.onTouchEvent = { [weak inputController, weak self] payload in
+            guard let inputController = inputController, let manager = self?.displayManager else { return }
             inputController.handleTouchEvent(payload, displayID: manager.displayID)
         }
 
@@ -212,13 +201,9 @@ public final class MirooEngine: ObservableObject {
             inputController?.rightClick()
         }
 
-        server.onClientDisconnected = { [weak inputController, weak self] in
-            inputController?.releaseAllButtons()
+        server.onClientDisconnected = { [weak self] in
             Task { @MainActor in
-                self?.isClientConnected = false
-                self?.connectedClientName = nil
-                self?.activeTransport = "None"
-                self?.statusMessage = "Waiting for iPhone..."
+                self?.stopDisplaySession(reason: .userDisconnected)
             }
         }
 
@@ -239,6 +224,165 @@ public final class MirooEngine: ObservableObject {
             }
         }
 
+        server.onOrientationChangeRequested = { [weak self] newOrientation in
+            Task { @MainActor in
+                await self?.switchOrientation(to: newOrientation)
+            }
+        }
+
+        server.onRequestKeyframe = { [weak self] in
+            self?.encoder?.requestKeyframe()
+        }
+
+        server.onAdaptiveDecision = { [weak self] decision in
+            self?.encoder?.setBitrate(decision.targetBitrate)
+            self?.encoder?.setTargetFPS(decision.targetFPS)
+        }
+
+        // 3. Setup Connection Authorization Flow (Phase 13)
+        server.onConnectionRequest = { [weak self] request, conn in
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                self.handleIncomingConnectionRequest(request, connection: conn)
+            }
+        }
+
+        server.onConnectionCancelled = { [weak self] cancelled in
+            Task { @MainActor [weak self] in
+                self?.authorizer.cancel(sessionID: cancelled.sessionID)
+            }
+        }
+
+        server.onSessionEnded = { [weak self] ended in
+            Task { @MainActor [weak self] in
+                self?.stopDisplaySession(reason: ended.reason)
+            }
+        }
+
+        authorizer.onRequestTimeout = { [weak self] sessionID in
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                MirooApprovalWindowController.shared.dismissPrompt(sessionID: sessionID)
+                self.server?.activeConnection?.send(message: .connectionRejected(
+                    ConnectionRejectedPayload(sessionID: sessionID, reasonCode: .timeout, reasonMessage: "Authorization timed out after 30 seconds.")
+                ))
+                self.server?.disconnectActiveConnection()
+            }
+        }
+
+        authorizer.onRequestCancelled = { sessionID in
+            Task { @MainActor in
+                MirooApprovalWindowController.shared.dismissPrompt(sessionID: sessionID)
+            }
+        }
+
+        // 4. Start Network Server & Bonjour Advertisement
+        try server.start()
+
+        // 5. Setup Sleep/Wake & Telemetry
+        setupSleepWakeObservers()
+        startTelemetryTimer()
+
+        self.isRunning = true
+        self.isStreamingPaused = false
+        self.statusMessage = "Miroo Running — Waiting for iPhone"
+        print("[MirooEngine] Engine started in listening mode (no virtual display created yet).")
+    }
+
+    private func handleIncomingConnectionRequest(_ request: ConnectionRequestPayload, connection: MirooConnection) {
+        let isStreaming = (displayManager != nil && isClientConnected)
+        let transport = (server?.currentTransportType == .usb) ? "USB" : "Wi-Fi"
+        let decision = authorizer.processRequest(request, isCurrentlyStreaming: isStreaming, transport: transport)
+
+        switch decision {
+        case .approved:
+            print("[MirooEngine] Request automatically approved for trusted client '\(request.clientName)'")
+            Task { @MainActor in
+                await self.startDisplaySession(for: request, connection: connection)
+            }
+
+        case .promptUser:
+            print("[MirooEngine] Prompting user for connection request from '\(request.clientName)'")
+            if let pending = authorizer.getPendingRequest(sessionID: request.sessionID) {
+                MirooApprovalWindowController.shared.showRequestPrompt(request: pending) { [weak self] sessionID, approved, remember in
+                    guard let self = self else { return }
+                    if approved {
+                        if let appReq = self.authorizer.approve(sessionID: sessionID, rememberDevice: remember) {
+                            Task { @MainActor in
+                                await self.startDisplaySession(for: appReq, connection: connection)
+                            }
+                        }
+                    } else {
+                        if let rej = self.authorizer.reject(sessionID: sessionID) {
+                            connection.send(message: .connectionRejected(
+                                ConnectionRejectedPayload(
+                                    sessionID: sessionID,
+                                    reasonCode: rej.reason,
+                                    reasonMessage: "Connection rejected by Mac user."
+                                )
+                            ))
+                            connection.disconnect()
+                        }
+                    }
+                }
+            }
+
+        case .rejected(let reason, let message):
+            print("[MirooEngine] Request rejected: \(reason.rawValue) - \(message)")
+            connection.send(message: .connectionRejected(
+                ConnectionRejectedPayload(sessionID: request.sessionID, reasonCode: reason, reasonMessage: message)
+            ))
+            connection.disconnect()
+        }
+    }
+
+    /// Allocates the virtual display, captures screen, and starts encoding strictly AFTER connection authorization.
+    public func startDisplaySession(for request: ConnectionRequestPayload, connection: MirooConnection) async {
+        print("[MirooEngine] Starting display session for '\(request.clientName)' (Session: \(request.sessionID))...")
+        statusMessage = "Allocating virtual display for \(request.clientName)..."
+
+        let targetWidth = request.preferredWidth > 0 ? request.preferredWidth : Int(VirtualDisplayManager.physicalWidth)
+        let targetHeight = request.preferredHeight > 0 ? request.preferredHeight : Int(VirtualDisplayManager.physicalHeight)
+
+        // 1. Send CONNECTION_ACCEPTED
+        let accepted = ConnectionAcceptedPayload(
+            sessionID: request.sessionID,
+            hostID: DeviceIdentity.currentID,
+            hostName: server?.serviceName ?? "Miroo Mac",
+            width: targetWidth,
+            height: targetHeight,
+            targetFPS: targetFPS,
+            scale: 2.0,
+            selectedTransport: server?.currentTransportType.rawValue ?? "TCP",
+            udpPort: server?.udpPort ?? 51042,
+            sessionToken: server?.udpSessionToken ?? 0
+        )
+        connection.send(message: .connectionAccepted(accepted))
+
+        // 2. Send SESSION_STARTING
+        connection.send(message: .sessionStarting(SessionStartingPayload(sessionID: request.sessionID)))
+
+        // 3. Allocate Virtual Display
+        let manager = VirtualDisplayManager()
+        self.displayManager = manager
+
+        guard manager.create() else {
+            print("[MirooEngine] ERROR: Failed to create virtual display.")
+            statusMessage = "Error: Failed to create virtual display"
+            connection.send(message: .connectionRejected(
+                ConnectionRejectedPayload(sessionID: request.sessionID, reasonCode: .unsupportedCapabilities, reasonMessage: "Failed to create virtual display on Mac.")
+            ))
+            connection.disconnect()
+            stopDisplaySession(reason: .shutdown)
+            return
+        }
+
+        let displayID = manager.displayID
+        self.activeWidth = targetWidth
+        self.activeHeight = targetHeight
+        self.currentOrientation = manager.currentOrientation
+        manager.restoreSavedArrangement()
+
         // 4. Initialize Hardware VideoEncoder
         let encoder = VideoEncoder(
             width: Int32(targetWidth),
@@ -252,15 +396,16 @@ public final class MirooEngine: ObservableObject {
         do {
             try encoder.setup()
         } catch {
+            print("[MirooEngine] ERROR: Video encoder setup failed: \(error.localizedDescription)")
             statusMessage = "Error: Video encoder setup failed"
-            print("[MirooEngine] ERROR: Failed to setup VideoEncoder: \(error.localizedDescription)")
-            stop()
-            throw error
+            connection.disconnect()
+            stopDisplaySession(reason: .shutdown)
+            return
         }
 
-        encoder.onEncodedFrame = { [weak server, weak self] data, pts, isKeyframe, captureNs, encStartNs, encCompNs, encodeDurationUs in
+        encoder.onEncodedFrame = { [weak self] data, pts, isKeyframe, captureNs, encStartNs, encCompNs, encodeDurationUs in
             guard let self = self, !self.isStreamingPaused else { return }
-            server?.enqueueFrame(
+            self.server?.enqueueFrame(
                 data: data,
                 pts: pts,
                 isKeyframe: isKeyframe,
@@ -275,10 +420,10 @@ public final class MirooEngine: ObservableObject {
         let capturer = DisplayStreamCapturer()
         self.capturer = capturer
 
-        capturer.onFrameCaptured = { [weak server, weak encoder, weak self] pixelBuffer, presentationTime, captureTimestampNs in
+        capturer.onFrameCaptured = { [weak self] pixelBuffer, presentationTime, captureTimestampNs in
             guard let self = self, !self.isStreamingPaused else { return }
-            let forceKey = server?.frameQueue.needsImmediateKeyframe ?? false
-            encoder?.encode(
+            let forceKey = self.server?.frameQueue.needsImmediateKeyframe ?? false
+            self.encoder?.encode(
                 pixelBuffer: pixelBuffer,
                 presentationTime: presentationTime,
                 captureTimestampNs: captureTimestampNs,
@@ -286,59 +431,55 @@ public final class MirooEngine: ObservableObject {
             )
         }
 
-        server.onOrientationChangeRequested = { [weak self] newOrientation in
-            Task { @MainActor in
-                await self?.switchOrientation(to: newOrientation)
-            }
+        do {
+            try await capturer.startCapture(
+                displayID: displayID,
+                displayName: VirtualDisplayManager.defaultDisplayName,
+                targetWidth: targetWidth,
+                targetHeight: targetHeight,
+                targetFPS: targetFPS
+            )
+        } catch {
+            print("[MirooEngine] ERROR: Screen capture failed: \(error.localizedDescription)")
+            statusMessage = "Error: Screen capture failed"
+            connection.disconnect()
+            stopDisplaySession(reason: .shutdown)
+            return
         }
 
-        server.onRequestKeyframe = { [weak encoder] in
-            encoder?.requestKeyframe()
-        }
+        // 6. Send SESSION_STARTED
+        connection.send(message: .sessionStarted(SessionStartedPayload(sessionID: request.sessionID, width: targetWidth, height: targetHeight)))
 
-        server.onAdaptiveDecision = { [weak encoder] decision in
-            encoder?.setBitrate(decision.targetBitrate)
-            encoder?.setTargetFPS(decision.targetFPS)
-        }
-
-        // 6. Start ScreenCaptureKit Stream & Server
-        statusMessage = "Starting screen capture..."
-        try await capturer.startCapture(
-            displayID: displayID,
-            displayName: displayName,
-            targetWidth: targetWidth,
-            targetHeight: targetHeight,
-            targetFPS: targetFPS
+        // 7. Send DISPLAY_INFO & STREAM_CONFIG
+        let displayMsg = MirooMessage.displayInfo(width: targetWidth, height: targetHeight, scaleFactor: 2.0, name: "Miroo Extended iPhone")
+        let streamMsg = MirooMessage.streamConfig(
+            codec: "H264",
+            width: targetWidth,
+            height: targetHeight,
+            fps: targetFPS,
+            bitrate: targetBitrateMbps * 1_000_000,
+            orientation: (targetWidth > targetHeight) ? .landscape : .portrait,
+            transport: server?.currentTransportType.rawValue ?? "TCP",
+            udpPort: server?.udpPort ?? 51042,
+            sessionToken: server?.udpSessionToken ?? 0,
+            serverHost: nil
         )
+        connection.send(message: displayMsg)
+        connection.send(message: streamMsg)
 
-        statusMessage = "Starting network server..."
-        try server.start()
-
-        // 7. Setup system sleep/wake notifications
-        setupSleepWakeObservers()
-
-        // 8. Start live telemetry ticker
-        startTelemetryTimer()
-
-        self.isRunning = true
-        self.isStreamingPaused = false
-        self.statusMessage = "Miroo Running — Waiting for iPhone"
-        print("[MirooEngine] Engine started successfully.")
+        // 8. Update State
+        self.isClientConnected = true
+        self.connectedClientName = request.clientName
+        self.updateActiveTransport()
+        self.statusMessage = "Streaming to \(request.clientName)"
+        print("[MirooEngine] Display session active and streaming to \(request.clientName)!")
     }
 
-    /// Stops all pipeline components and frees hardware resources gracefully.
-    public func stop() {
-        guard isRunning else { return }
-        print("[MirooEngine] Stopping streaming engine...")
-
-        statusMessage = "Stopping..."
-        stopTelemetryTimer()
+    /// Stops display session, releases encoder and capturer, and destroys virtual display cleanly.
+    public func stopDisplaySession(reason: SessionEndReason = .userDisconnected) {
+        print("[MirooEngine] Stopping display session (reason: \(reason.rawValue))...")
 
         inputController?.releaseAllButtons()
-        inputController = nil
-
-        server?.stop()
-        server = nil
 
         capturer?.stopCaptureSync()
         capturer = nil
@@ -349,13 +490,31 @@ public final class MirooEngine: ObservableObject {
         displayManager?.destroy()
         displayManager = nil
 
-        isRunning = false
         isClientConnected = false
         connectedClientName = nil
         activeTransport = "None"
         currentFPS = 0.0
         currentBitrateMbps = 0.0
         currentPipelineLatencyMs = 0.0
+        statusMessage = "Miroo Running — Waiting for iPhone"
+        print("[MirooEngine] Display session stopped cleanly. Returned to listening mode.")
+    }
+
+    /// Stops all pipeline components and frees hardware resources gracefully.
+    public func stop() {
+        guard isRunning else { return }
+        print("[MirooEngine] Stopping streaming engine...")
+
+        statusMessage = "Stopping..."
+        stopTelemetryTimer()
+
+        stopDisplaySession(reason: .shutdown)
+
+        inputController = nil
+        server?.stop()
+        server = nil
+
+        isRunning = false
         statusMessage = "Stopped"
         print("[MirooEngine] Engine stopped cleanly.")
     }
