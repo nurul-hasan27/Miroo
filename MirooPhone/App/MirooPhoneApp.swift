@@ -133,7 +133,6 @@ final class ReceiverViewModel: ObservableObject {
                 case .connected(let host, let transport):
                     self?.connectedHost = host
                     self?.transportType = transport.rawValue
-                    self?.isStreaming = true
                     self?.errorMessage = nil
                     PipelineBenchmark.shared.activeTransport = transport.rawValue
 
@@ -172,12 +171,6 @@ final class ReceiverViewModel: ObservableObject {
                 if self.selectedHost == nil || !hosts.contains(where: { $0.id == self.selectedHost?.id }) {
                     // Automatically prefer USB if available, otherwise first discovered host
                     self.selectedHost = hosts.first(where: { $0.isUSB }) ?? hosts.first
-                }
-
-                // Seamless connection to available Mac
-                if let host = self.selectedHost, !self.isStreaming, !self.lifecycleState.isConnecting, !self.userStoppedManually {
-                    print("[Miroo App] Auto-connecting to discovered host: \(host.name)")
-                    self.startReceiving()
                 }
             }
         }
@@ -638,7 +631,7 @@ struct ReceiverContentView: View {
                                                 .font(.headline)
                                                 .foregroundColor(.white)
                                         } else {
-                                            Text("Start Receiving")
+                                            Text(viewModel.selectedHost != nil ? "Connect to \(viewModel.selectedHost!.name)" : "Select a Mac to Connect")
                                                 .font(.headline)
                                                 .foregroundColor(.white)
                                         }

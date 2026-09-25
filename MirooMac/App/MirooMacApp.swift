@@ -9,6 +9,7 @@
 
 import Cocoa
 import CoreGraphics
+import Network
 #if canImport(MirooNetworking)
 import MirooNetworking
 #endif
@@ -50,6 +51,13 @@ final class MirooMacApp: NSObject, NSApplicationDelegate {
 
         if CommandLine.arguments.contains("--audit-arrangement") {
             runDisplayArrangementAudit()
+            return
+        }
+
+        if CommandLine.arguments.contains("--audit-connection") {
+            Task { @MainActor in
+                await self.runConnectionAuthorizationAudit()
+            }
             return
         }
 
@@ -349,6 +357,173 @@ final class MirooMacApp: NSObject, NSApplicationDelegate {
             exit(0)
         } else {
             print("❌ SOME PHYSICAL ARRANGEMENT AUDIT CYCLES FAILED.\n")
+            exit(1)
+        }
+    }
+
+    // MARK: - Physical Connection Authorization & Session Lifecycle Audit
+
+    private func getActiveDisplayIDs() -> [CGDirectDisplayID] {
+        var count: UInt32 = 0
+        CGGetActiveDisplayList(0, nil, &count)
+        var displays = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        CGGetActiveDisplayList(count, &displays, &count)
+        return displays
+    }
+
+    @MainActor
+    private func runConnectionAuthorizationAudit() async {
+        print("==================================================================")
+        print("   Miroo Physical Connection & Display Session Lifecycle Audit   ")
+        print("==================================================================")
+
+        let initialDisplays = getActiveDisplayIDs()
+        let mainID = CGMainDisplayID()
+        let initialMainBounds = CGDisplayBounds(mainID)
+        print("Initial Active Displays Count: \(initialDisplays.count)")
+        print("Primary Host Display ID: \(mainID)")
+        print("Primary Host Display Bounds: \(initialMainBounds)")
+
+        var auditPassed = true
+        var cycleLogs: [String] = []
+
+        // Phase A: Engine Start in Listening Mode (NO Virtual Display Creation)
+        print("\n--- [Audit Step 1] Engine Start in Listening Mode ---")
+        let engine = MirooEngine.shared
+
+        do {
+            try await engine.start()
+        } catch {
+            print("Failed to start engine: \(error)")
+            exit(1)
+        }
+
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+
+        let isRunningOk = engine.isRunning
+        let displayManagerNil = (engine.displayManager == nil)
+        let activeDisplaysAfterStart = getActiveDisplayIDs()
+        let noVirtualDisplay = (activeDisplaysAfterStart.count == initialDisplays.count)
+
+        let step1Log = "Step 1: isRunning=\(isRunningOk), displayManagerIsNil=\(displayManagerNil), activeDisplays=\(activeDisplaysAfterStart.count) (No Virtual Display Created)"
+        cycleLogs.append(step1Log)
+        print("  ✓ \(step1Log)")
+        if !isRunningOk || !displayManagerNil || !noVirtualDisplay { auditPassed = false }
+
+        // Phase B: Cycle 1 — Reject Flow
+        print("\n--- [Audit Step 2] Cycle 1: Inbound Request -> User Reject Flow ---")
+        let clientID = "simulated-iphone-audit-1"
+        let session1ID = UUID().uuidString
+        let req1 = ConnectionRequestPayload(
+            clientID: clientID,
+            clientName: "Nurul's iPhone (Audit)",
+            clientModel: "iPhone 11",
+            protocolVersion: Int(MirooHeader.currentVersion),
+            preferredWidth: 1170,
+            preferredHeight: 2532,
+            preferredFPS: 60,
+            preferredTransport: "USB",
+            sessionID: session1ID
+        )
+
+        // Process request through authorizer
+        let dec1 = engine.authorizer.processRequest(req1, isCurrentlyStreaming: false, transport: "USB")
+        let dec1Prompt = (dec1 == .promptUser)
+        let hasPending1 = (engine.authorizer.getPendingRequest(sessionID: session1ID) != nil)
+
+        // User clicks "Don't Allow"
+        let rejectResult = engine.authorizer.reject(sessionID: session1ID)
+        let rejectReasonOk = (rejectResult?.reason == .userRejected)
+        let clearedPending1 = (engine.authorizer.getPendingRequest(sessionID: session1ID) == nil)
+
+        // Verify NO virtual display created
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        let displaysAfterReject = getActiveDisplayIDs()
+        let noDisplayCreatedOnReject = (displaysAfterReject.count == initialDisplays.count && engine.displayManager == nil)
+
+        let step2Log = "Cycle 1 (Reject Flow): PromptTriggered=\(dec1Prompt), PendingStored=\(hasPending1), Rejected=\(rejectReasonOk), Cleared=\(clearedPending1), VirtualDisplayCreated=\(!noDisplayCreatedOnReject)"
+        cycleLogs.append(step2Log)
+        print("  ✓ \(step2Log)")
+        if !dec1Prompt || !hasPending1 || !rejectReasonOk || !clearedPending1 || !noDisplayCreatedOnReject { auditPassed = false }
+
+        // Phase C: Cycle 2 — Accept Flow
+        print("\n--- [Audit Step 3] Cycle 2: Inbound Request -> User Accept Flow ---")
+        let session2ID = UUID().uuidString
+        let req2 = ConnectionRequestPayload(
+            clientID: clientID,
+            clientName: "Nurul's iPhone (Audit)",
+            clientModel: "iPhone 11",
+            protocolVersion: Int(MirooHeader.currentVersion),
+            preferredWidth: 1170,
+            preferredHeight: 2532,
+            preferredFPS: 60,
+            preferredTransport: "USB",
+            sessionID: session2ID
+        )
+
+        let dec2 = engine.authorizer.processRequest(req2, isCurrentlyStreaming: false, transport: "USB")
+        let dec2Prompt = (dec2 == .promptUser)
+
+        // User clicks "Allow"
+        let approvedPayload = engine.authorizer.approve(sessionID: session2ID, rememberDevice: false)
+        let approvedOk = (approvedPayload != nil)
+
+        // Allocate display session
+        let mockConn = MirooConnection(to: NWEndpoint.hostPort(host: "127.0.0.1", port: 51042), queue: .main)
+        await engine.startDisplaySession(for: approvedPayload!, connection: mockConn)
+
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+
+        let displayManagerActive = (engine.displayManager != nil)
+        let displaysAfterAccept = getActiveDisplayIDs()
+        let virtualDisplayCreated = (displaysAfterAccept.count == initialDisplays.count + 1)
+        let newDisplayID = engine.displayManager?.displayID ?? 0
+        let newDisplayBounds = CGDisplayBounds(newDisplayID)
+
+        let step3Log = "Cycle 2 (Accept Flow): Approved=\(approvedOk), DisplayManagerActive=\(displayManagerActive), VirtualDisplayID=\(newDisplayID), Bounds=\(newDisplayBounds), StreamActive=\(engine.isClientConnected)"
+        cycleLogs.append(step3Log)
+        print("  ✓ \(step3Log)")
+        if !dec2Prompt || !approvedOk || !displayManagerActive || !virtualDisplayCreated { auditPassed = false }
+
+        // Phase D: Cycle 3 — Disconnect & Clean Teardown Flow
+        print("\n--- [Audit Step 4] Cycle 3: Disconnect & Clean Display Teardown ---")
+        engine.stopDisplaySession(reason: .userDisconnected)
+
+        var virtualDisplayDestroyed = false
+        for _ in 0..<15 {
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            let currentDisplays = getActiveDisplayIDs()
+            if !currentDisplays.contains(newDisplayID) && currentDisplays.count == initialDisplays.count {
+                virtualDisplayDestroyed = true
+                break
+            }
+        }
+
+        let displayManagerCleared = (engine.displayManager == nil)
+        let engineStillListening = engine.isRunning
+        let currentMainBounds = CGDisplayBounds(CGMainDisplayID())
+        let mainUntouched = (currentMainBounds == initialMainBounds)
+
+        let step4Log = "Cycle 3 (Teardown Flow): VirtualDisplayDestroyed=\(virtualDisplayDestroyed), DisplayManagerCleared=\(displayManagerCleared), StillListening=\(engineStillListening), MainDisplayUntouched=\(mainUntouched)"
+        cycleLogs.append(step4Log)
+        print("  ✓ \(step4Log)")
+        if !virtualDisplayDestroyed || !displayManagerCleared || !engineStillListening || !mainUntouched { auditPassed = false }
+
+        // Clean shutdown
+        engine.stop()
+        try? await Task.sleep(nanoseconds: 500_000_000)
+
+        print("\n==================================================================")
+        print("Physical Connection & Session Lifecycle Audit Summary:")
+        for log in cycleLogs {
+            print("  • \(log)")
+        }
+        print("==================================================================")
+        if auditPassed {
+            print("🎉 ALL PHYSICAL CONNECTION & SESSION LIFECYCLE AUDITS PASSED!\n")
+            exit(0)
+        } else {
+            print("❌ SOME PHYSICAL CONNECTION & SESSION LIFECYCLE AUDITS FAILED.\n")
             exit(1)
         }
     }
