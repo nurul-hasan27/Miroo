@@ -42,8 +42,15 @@ public final class MirooBrowser: @unchecked Sendable {
 
     // Direct / USB Registered Devices
     private var directDevices: [String: MirooDevice] = [:]
+    private var endpointsByDeviceID: [String: NWEndpoint] = [:]
 
     public init() {}
+
+    public func endpoint(for deviceID: String) -> NWEndpoint? {
+        queue.sync {
+            endpointsByDeviceID[deviceID]
+        }
+    }
 
     deinit {
         stop()
@@ -157,6 +164,7 @@ public final class MirooBrowser: @unchecked Sendable {
                         dev.endpointDescription = "\(result.endpoint)"
 
                         devicesMap[devID] = dev
+                        self.endpointsByDeviceID[devID] = result.endpoint
                     }
 
                     let sortedDevices = Array(devicesMap.values).sorted { $0.displayName < $1.displayName }
@@ -242,6 +250,7 @@ public final class MirooBrowser: @unchecked Sendable {
     public func removeDiscoveredDevice(id: String) {
         queue.sync {
             self.directDevices.removeValue(forKey: id)
+            self.endpointsByDeviceID.removeValue(forKey: id)
             self.discoveredDevices.removeAll { $0.id == id }
             self.onDevicesUpdated?(self.discoveredDevices)
         }
@@ -259,5 +268,6 @@ public final class MirooBrowser: @unchecked Sendable {
         discoveredServices.removeAll()
         discoveredDevices.removeAll()
         directDevices.removeAll()
+        endpointsByDeviceID.removeAll()
     }
 }
