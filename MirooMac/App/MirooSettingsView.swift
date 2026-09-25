@@ -21,6 +21,11 @@ public struct MirooSettingsView: View {
 
     public var body: some View {
         TabView {
+            devicesTab
+                .tabItem {
+                    Label("Devices", systemImage: "iphone.gen3")
+                }
+
             generalTab
                 .tabItem {
                     Label("General", systemImage: "gearshape")
@@ -37,7 +42,7 @@ public struct MirooSettingsView: View {
                 }
         }
         .padding(20)
-        .frame(width: 480, height: 380)
+        .frame(width: 520, height: 420)
     }
 
     // MARK: - General Tab
@@ -173,6 +178,96 @@ public struct MirooSettingsView: View {
                     try? PipelineBenchmark.shared.exportJSON(toPath: "pipeline_benchmark_report.json")
                     print("[Miroo] Benchmark exported to pipeline_benchmark_report.json")
                 }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    // MARK: - Devices Tab
+
+    @ViewBuilder
+    private var devicesTab: some View {
+        Form {
+            Section(header: Text("Nearby iPhones").font(.headline)) {
+                if engine.nearbyPhones.isEmpty {
+                    HStack(spacing: 12) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Searching for nearby iPhones over Wi-Fi and USB...")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(.vertical, 8)
+                } else {
+                    ForEach(engine.nearbyPhones) { phone in
+                        HStack {
+                            Image(systemName: phone.isUSBAvailable ? "cable.connector" : "iphone")
+                                .foregroundColor(phone.isUSBAvailable ? .orange : .blue)
+                                .font(.title3)
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(spacing: 6) {
+                                    Text(phone.displayName)
+                                        .fontWeight(.semibold)
+                                    if phone.isUSBAvailable {
+                                        Text("USB")
+                                            .font(.system(size: 9, weight: .bold))
+                                            .padding(.horizontal, 5)
+                                            .padding(.vertical, 2)
+                                            .background(Color.orange.opacity(0.2))
+                                            .foregroundColor(.orange)
+                                            .cornerRadius(4)
+                                    }
+                                    if phone.isWiFiAvailable {
+                                        Text("Wi-Fi")
+                                            .font(.system(size: 9, weight: .bold))
+                                            .padding(.horizontal, 5)
+                                            .padding(.vertical, 2)
+                                            .background(Color.blue.opacity(0.2))
+                                            .foregroundColor(.blue)
+                                            .cornerRadius(4)
+                                    }
+                                }
+                                Text("\(phone.modelName)\(phone.osVersion != nil ? " · " + phone.osVersion! : "")")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            Spacer()
+                            if engine.isClientConnected && engine.connectedClientName == phone.displayName {
+                                Button("Disconnect") {
+                                    engine.disconnectClient()
+                                }
+                                .buttonStyle(.bordered)
+                                .tint(.red)
+                            } else {
+                                Button("Connect") {
+                                    engine.connect(to: phone)
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .disabled(!engine.isRunning)
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+            }
+
+            Section(header: Text("Connection Guidance").font(.headline)) {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "wifi")
+                            .foregroundColor(.blue)
+                        Text("For the smoothest experience, connect your Mac and iPhone to the same Wi-Fi network.")
+                            .font(.caption)
+                    }
+                    HStack(spacing: 8) {
+                        Image(systemName: "cable.connector")
+                            .foregroundColor(.orange)
+                        Text("For ultra-low latency (< 10ms) and zero wireless interference, connect via Lightning / USB-C cable.")
+                            .font(.caption)
+                    }
+                }
+                .foregroundColor(.secondary)
+                .padding(.vertical, 4)
             }
         }
         .formStyle(.grouped)

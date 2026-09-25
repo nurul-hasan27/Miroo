@@ -89,7 +89,35 @@ public final class MirooMenuBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
-        // 4. Stream Controls
+        // 4. Nearby iPhones
+        let phonesHeader = NSMenuItem(title: "Nearby iPhones", action: nil, keyEquivalent: "")
+        phonesHeader.isEnabled = false
+        menu.addItem(phonesHeader)
+
+        if engine.nearbyPhones.isEmpty {
+            let emptyItem = NSMenuItem(title: "  Searching for iPhones...", action: nil, keyEquivalent: "")
+            emptyItem.isEnabled = false
+            menu.addItem(emptyItem)
+        } else {
+            for phone in engine.nearbyPhones {
+                let badge = phone.isUSBAvailable ? "USB" : "Wi-Fi"
+                let isConnected = (engine.isClientConnected && engine.connectedClientName == phone.displayName)
+                let statusText = isConnected ? "Connected" : phone.availability.rawValue.capitalized
+                let title = "  \(phone.displayName) (\(phone.modelName)) [\(badge)] · \(statusText)"
+                let item = NSMenuItem(title: title, action: #selector(deviceItemClicked(_:)), keyEquivalent: "")
+                item.representedObject = phone
+                item.target = self
+                menu.addItem(item)
+            }
+        }
+
+        let hintItem = NSMenuItem(title: "  Tip: Connect via USB or same Wi-Fi network", action: nil, keyEquivalent: "")
+        hintItem.isEnabled = false
+        menu.addItem(hintItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        // 5. Stream Controls
         let pauseItem = NSMenuItem(
             title: engine.isStreamingPaused ? "Resume Streaming" : "Pause Streaming",
             action: #selector(togglePauseAction),
@@ -150,6 +178,16 @@ public final class MirooMenuBarController: NSObject, NSMenuDelegate {
     }
 
     // MARK: - Actions
+
+    @objc private func deviceItemClicked(_ sender: NSMenuItem) {
+        if let device = sender.representedObject as? MirooDevice {
+            if engine.isClientConnected && engine.connectedClientName == device.displayName {
+                engine.disconnectClient()
+            } else {
+                engine.connect(to: device)
+            }
+        }
+    }
 
     @objc private func togglePauseAction() {
         engine.togglePause()

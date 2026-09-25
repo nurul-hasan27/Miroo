@@ -56,6 +56,12 @@ public final class MirooEngine: ObservableObject {
     }
     @Published public private(set) var statusMessage: String = "Ready"
 
+    // MARK: - Discovery
+    public let browser = MirooBrowser()
+    public let usbmux = USBMuxClient()
+    private var usbAttachedSerialMap: [UInt32: String] = [:]
+    @Published public private(set) var nearbyPhones: [MirooDevice] = []
+
     // MARK: - Core Components
 
     public private(set) var displayManager: VirtualDisplayManager?
@@ -73,12 +79,71 @@ public final class MirooEngine: ObservableObject {
 
     public init() {
         checkLaunchAtLoginStatus()
+        setupDiscovery()
     }
 
     deinit {
         // Observers cleanup
         if let obs = sleepObserver { NotificationCenter.default.removeObserver(obs) }
         if let obs = wakeObserver { NotificationCenter.default.removeObserver(obs) }
+        browser.stop()
+        usbmux.stopMonitoring()
+    }
+
+    private func setupDiscovery() {
+        browser.onDevicesUpdated = { [weak self] devices in
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                self.nearbyPhones = devices.filter { $0.deviceType == .iphone }
+            }
+        }
+        browser.start()
+
+        usbmux.onDeviceAttached = { [weak self] usbDev in
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                self.usbAttachedSerialMap[usbDev.deviceID] = usbDev.serialNumber
+                let dev = MirooDevice(
+                    id: usbDev.serialNumber,
+                    deviceType: .iphone,
+                    displayName: "iPhone (USB)",
+                    modelName: "iPhone",
+                    osVersion: nil,
+                    isUSBAvailable: true,
+                    isWiFiAvailable: false,
+                    availability: .available,
+                    lastSeen: Date(),
+                    endpointDescription: "USB usbmuxd (port \(USBMuxClient.targetDevicePort))"
+                )
+                self.browser.upsertDirectDevice(dev)
+            }
+        }
+
+        usbmux.onDeviceDetached = { [weak self] deviceID in
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                if let serial = self.usbAttachedSerialMap.removeValue(forKey: deviceID) {
+                    self.browser.removeDirectDevice(id: serial)
+                }
+            }
+        }
+        usbmux.startMonitoring()
+    }
+
+    public func connect(to device: MirooDevice) {
+        print("[MirooEngine] User requested connection to \(device.displayName)...")
+        if device.isUSBAvailable {
+            server?.startUSBMonitoring()
+        }
+    }
+
+    public func disconnectClient() {
+        print("[MirooEngine] Disconnecting active client...")
+        server?.disconnectActiveConnection()
+        isClientConnected = false
+        connectedClientName = nil
+        activeTransport = "None"
+        statusMessage = "Waiting for iPhone..."
     }
 
     // MARK: - Lifecycle Controls

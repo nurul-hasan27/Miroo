@@ -155,6 +155,23 @@ public final class MirooServer: @unchecked Sendable {
         }
     }
 
+    /// Disconnects the active client connection and releases active transport.
+    public func disconnectActiveConnection() {
+        queue.async { [weak self] in
+            guard let self = self else { return }
+            self.activeVideoTransport?.stop()
+            self.activeVideoTransport = nil
+            if let active = self.activeConnection {
+                active.disconnect()
+                self.activeConnection = nil
+            }
+            self.frameQueue.clear()
+            self.isSending = false
+            self.isUSBActive = false
+            self.onClientDisconnected?()
+        }
+    }
+
     // MARK: - Listener & Connection Handling
 
     private func handleListenerState(_ state: NWListener.State) {
@@ -558,7 +575,7 @@ public final class MirooServer: @unchecked Sendable {
 
     // MARK: - USB Management (Phase 8B)
 
-    private func startUSBMonitoring() {
+    public func startUSBMonitoring() {
         usbmuxClient.onDeviceAttached = { [weak self] device in
             self?.handleUSBDeviceAttached(device)
         }
@@ -568,9 +585,19 @@ public final class MirooServer: @unchecked Sendable {
         usbmuxClient.startMonitoring()
     }
 
-    private func stopUSBMonitoring() {
+    public func stopUSBMonitoring() {
         stopUSBRetryTimer()
         usbmuxClient.stopMonitoring()
+    }
+
+    /// Retries connection to attached USB devices
+    public func retryUSBConnection() {
+        queue.async { [weak self] in
+            guard let self = self else { return }
+            for dev in self.usbmuxClient.attachedDevices.values {
+                self.attemptUSBConnection(deviceID: dev.deviceID)
+            }
+        }
     }
 
     private func handleUSBDeviceAttached(_ device: USBMuxDevice) {
