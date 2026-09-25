@@ -37,9 +37,49 @@ public final class MirooConnection: @unchecked Sendable {
     public var onStateChanged: ((MirooConnectionState) -> Void)?
     public var onDisconnected: ((Error?) -> Void)?
 
+    public var resolvedLocalHost: String? {
+        if let local = connection.currentPath?.localEndpoint, case .hostPort(let h, _) = local {
+            switch h {
+            case .ipv4(let ip):
+                return "\(ip)"
+            case .ipv6(let ip):
+                return "\(ip)"
+            default:
+                return "\(h)".components(separatedBy: "%").first
+            }
+        }
+        return nil
+    }
+
+    public var resolvedRemoteHost: String? {
+        if let remote = connection.currentPath?.remoteEndpoint, case .hostPort(let h, _) = remote {
+            switch h {
+            case .ipv4(let ip):
+                return "\(ip)"
+            case .ipv6(let ip):
+                return "\(ip)"
+            default:
+                return "\(h)".components(separatedBy: "%").first
+            }
+        } else if case .hostPort(let h, _) = connection.endpoint {
+            switch h {
+            case .ipv4(let ip):
+                return "\(ip)"
+            case .ipv6(let ip):
+                return "\(ip)"
+            default:
+                return "\(h)".components(separatedBy: "%").first
+            }
+        }
+        return nil
+    }
+
     public init(connection: NWConnection, queue: DispatchQueue) {
         self.connection = connection
         self.queue = queue
+        if connection.state == .ready {
+            self.state = .connected
+        }
     }
 
     /// Convenience initializer to connect to an NWEndpoint (client-side)
@@ -68,7 +108,11 @@ public final class MirooConnection: @unchecked Sendable {
                 }
             }
 
-            self.connection.start(queue: self.queue)
+            if self.connection.state == .ready {
+                self.handleNWStateUpdate(.ready)
+            } else if self.connection.state != .cancelled {
+                self.connection.start(queue: self.queue)
+            }
             self.receiveNextChunk()
         }
     }
