@@ -548,14 +548,16 @@ public final class MirooEngine: ObservableObject {
                     continue
                 }
 
-                print("[MirooEngine] Opening usbmuxd tunnel to device ID \(usbID) on port \(USBMuxClient.targetDevicePort)...")
+                print("[Miroo USB Lifecycle] USB Connection initiated: Device ID=\(usbID), Device Name='\(dev.displayName)', Serial='\(dev.id)'")
+                print("[Miroo USB Lifecycle] Creating usbmuxd UNIX tunnel via /var/run/usbmuxd -> target port \(USBMuxClient.targetDevicePort)...")
                 self.usbmux.connectToDevice(deviceID: usbID, port: USBMuxClient.targetDevicePort, timeoutSeconds: 5.0) { [weak self] result in
                     guard let self = self else { return }
                     Task { @MainActor [weak self] in
                         guard let self = self else { return }
                         switch result {
                         case .success(let nwConn):
-                            print("[MirooEngine] USB tunnel opened to \(dev.displayName)! Starting session...")
+                            print("[Miroo USB Lifecycle] usbmuxd tunnel established: Device ID=\(usbID), Endpoint=\(nwConn.endpoint)")
+                            print("[Miroo USB Lifecycle] Initiating display session with Transport=USB...")
                             let conn = MirooConnection(connection: nwConn, queue: DispatchQueue(label: "com.miroo.client.\(dev.id)", qos: .userInteractive))
                             var hasStarted = false
                             conn.onStateChanged = { [weak self, weak conn] state in
@@ -575,6 +577,7 @@ public final class MirooEngine: ObservableObject {
                                             preferredTransport: VideoTransportType.usb.rawValue,
                                             sessionID: sID
                                         )
+                                        print("[Miroo USB Lifecycle] Session creation: SessionID=\(sID), Transport=USB, Client=\(dev.displayName)")
                                         await self.startDisplaySession(for: req, connection: conn)
                                     }
                                 }
@@ -594,10 +597,11 @@ public final class MirooEngine: ObservableObject {
                                     preferredTransport: VideoTransportType.usb.rawValue,
                                     sessionID: sID
                                 )
+                                print("[Miroo USB Lifecycle] Session creation: SessionID=\(sID), Transport=USB, Client=\(dev.displayName)")
                                 await self.startDisplaySession(for: req, connection: conn)
                             }
                         case .failure(let err):
-                            print("[MirooEngine] USB tunnel failed to \(dev.displayName): \(err.localizedDescription)")
+                            print("[Miroo USB Lifecycle] usbmuxd tunnel failed to \(dev.displayName): \(err.localizedDescription)")
                             self.statusMessage = "USB Connection failed: \(err.localizedDescription)"
                         }
                     }

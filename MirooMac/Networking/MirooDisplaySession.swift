@@ -525,6 +525,9 @@ public final class MirooDisplaySession: ObservableObject, Identifiable {
                 switch message.header.messageType {
                 case .ready:
                     print("[Miroo Readiness] READY received from client for session '\(self.sessionID)'. Transitioning to streaming.")
+                    if self.currentTransportType == .usb {
+                        print("[Miroo USB Lifecycle] READY confirmed over USB: SessionID=\(self.sessionID), Transport=USB, Streaming=active")
+                    }
                     self.hasReceivedReady = true
                     self.state = .active
                     self.transitionReadiness(to: .streaming)
