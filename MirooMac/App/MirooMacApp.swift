@@ -61,9 +61,17 @@ final class MirooMacApp: NSObject, NSApplicationDelegate {
             return
         }
 
+        let isHeadless = CommandLine.arguments.contains("--headless")
+        if !isHeadless {
+            NSApp.setActivationPolicy(.regular)
+            MirooDashboardWindowController.shared.showDashboard()
+        } else {
+            NSApp.setActivationPolicy(.accessory)
+            print("[Miroo] Running in headless/accessory mode.")
+        }
+
         let engine = MirooEngine.shared
         self.menuBarController = MirooMenuBarController(engine: engine)
-
 
         // Parse launch flags for transport override
         if CommandLine.arguments.contains("--udp") || ProcessInfo.processInfo.environment["MIROO_TRANSPORT"]?.lowercased() == "udp" {
@@ -103,6 +111,13 @@ final class MirooMacApp: NSObject, NSApplicationDelegate {
         } else {
             print("Miroo running in background menu bar mode.")
         }
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag {
+            MirooDashboardWindowController.shared.showDashboard()
+        }
+        return true
     }
 
     private func startTerminalListener(engine: MirooEngine) {

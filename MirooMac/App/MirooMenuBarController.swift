@@ -89,6 +89,17 @@ public final class MirooMenuBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
+        // 2. Open Dashboard
+        let dashboardItem = NSMenuItem(
+            title: "Open Miroo Dashboard...",
+            action: #selector(openDashboardAction),
+            keyEquivalent: "d"
+        )
+        dashboardItem.target = self
+        menu.addItem(dashboardItem)
+
+        menu.addItem(NSMenuItem.separator())
+
         // 4. Nearby iPhones
         let phonesHeader = NSMenuItem(title: "Nearby iPhones", action: nil, keyEquivalent: "")
         phonesHeader.isEnabled = false
@@ -178,6 +189,9 @@ public final class MirooMenuBarController: NSObject, NSMenuDelegate {
     }
 
     // MARK: - Actions
+    @objc public func openDashboardAction() {
+        MirooDashboardWindowController.shared.showDashboard()
+    }
 
     @objc private func deviceItemClicked(_ sender: NSMenuItem) {
         if let device = sender.representedObject as? MirooDevice {
