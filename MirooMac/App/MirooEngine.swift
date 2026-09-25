@@ -151,6 +151,10 @@ public final class MirooEngine: ObservableObject {
                 guard let self = self else { return }
                 if let serial = self.usbAttachedSerialMap.removeValue(forKey: deviceID) {
                     self.browser.removeDirectDevice(id: serial)
+                    if let session = self.activeSessions[serial], session.currentTransportType == .usb {
+                        print("[MirooEngine] USB device '\(serial)' detached while USB session active. Stopping session cleanly...")
+                        self.stopSession(for: serial)
+                    }
                 }
             }
         }
@@ -435,9 +439,15 @@ public final class MirooEngine: ObservableObject {
             lastSeen: Date()
         )
 
-        // Stop existing session for this device if already running
-        if let existing = activeSessions[request.clientID] {
+        // Stop existing session for this device or sessionID if already running
+        if let existing = activeSessions.removeValue(forKey: request.clientID) {
+            print("[MirooEngine] Cleaning up existing session for device '\(request.clientID)' before starting new session")
             existing.stop(reason: .userDisconnected)
+        }
+        for (devId, sess) in activeSessions where sess.sessionID == request.sessionID {
+            print("[MirooEngine] Cleaning up stale session '\(request.sessionID)' for device '\(devId)'")
+            activeSessions.removeValue(forKey: devId)
+            sess.stop(reason: .userDisconnected)
         }
 
         let session = MirooDisplaySession(

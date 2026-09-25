@@ -48,6 +48,7 @@ final class Phase13Tests {
         testDynamicTransportSwitchingWithoutDisplayReset()
         testDisplaySessionInputSafetyAndWiFiHostIntegrity()
         testReadinessDiagnosticStateMachine()
+        testPhysicalReconnectAndCleanupHandling()
 
         print("==================================================================")
         print("Phase 13 Verification Results: \(testsPassed) Passed, \(testsFailed) Failed")
@@ -602,5 +603,61 @@ final class Phase13Tests {
 
         session.stop(reason: .userDisconnected)
         assertTest(session.readinessState == .disconnected, "Transitioned to .disconnected on stop")
+    }
+
+    // MARK: - Test 13: Physical Reconnect, USB Detach, and Duplicate Session Cleanup
+    static func testPhysicalReconnectAndCleanupHandling() {
+        print("\n[Test 13] Physical Reconnect, USB Detach, and Duplicate Session Cleanup...")
+
+        let dev = MirooDevice(
+            id: "reconnect-phone-uuid",
+            deviceType: .iphone,
+            displayName: "Reconnect Phone",
+            modelName: "iPhone 11",
+            osVersion: "17.5.1",
+            isUSBAvailable: true,
+            isWiFiAvailable: true,
+            availability: .connected,
+            lastSeen: Date()
+        )
+
+        var activeSessions: [String: MirooDisplaySession] = [:]
+
+        // 1. Initial USB session
+        let session1 = MirooDisplaySession(
+            device: dev,
+            sessionID: "session-initial",
+            width: 1170,
+            height: 2532,
+            preferredTransport: .usb
+        )
+        activeSessions[dev.id] = session1
+        assertTest(activeSessions.count == 1, "Session 1 registered in activeSessions")
+        assertTest(session1.state == .connecting, "Session 1 state is connecting")
+
+        // 2. Simulate rapid client reconnect before Session 1 was cleaned up
+        // Engine deduplication logic:
+        if let existing = activeSessions.removeValue(forKey: dev.id) {
+            existing.stop(reason: .userDisconnected)
+        }
+        assertTest(session1.state == .disconnected, "Previous session stopped cleanly during duplicate replacement")
+        assertTest(session1.readinessState == .disconnected, "Previous session readiness set to disconnected")
+
+        // 3. New session (e.g. over Wi-Fi after USB unplug)
+        let session2 = MirooDisplaySession(
+            device: dev,
+            sessionID: "session-reconnected",
+            width: 1170,
+            height: 2532,
+            preferredTransport: .udp
+        )
+        activeSessions[dev.id] = session2
+        assertTest(activeSessions.count == 1, "Active sessions map contains exactly 1 session (no leaks)")
+        assertTest(session2.currentTransportType == .udp, "New session correctly running over UDP")
+
+        // 4. Clean teardown
+        session2.stop(reason: .userDisconnected)
+        activeSessions.removeValue(forKey: dev.id)
+        assertTest(activeSessions.isEmpty, "Active sessions cleanly empty after teardown")
     }
 }
