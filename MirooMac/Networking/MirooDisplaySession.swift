@@ -216,6 +216,9 @@ public final class MirooDisplaySession: ObservableObject, Identifiable {
         videoTransport?.stop()
         videoTransport = nil
 
+        // Safety: release any held mouse buttons on disconnect
+        inputController.releaseAllButtons()
+
         // Destroy virtual display and persist arrangement
         displayManager?.destroy()
         displayManager = nil
@@ -241,9 +244,21 @@ public final class MirooDisplaySession: ObservableObject, Identifiable {
         isSwitchingTransport = true
         defer { isSwitchingTransport = false }
 
+        // Safety: ensure no stuck mouse buttons during transport handover
+        inputController.releaseAllButtons()
+
         // 1. Tell client to reconfigure transport if connected
         if let conn = connection {
-            let targetHost = "127.0.0.1"
+            let targetHost: String
+            if newTransport == .usb {
+                targetHost = "127.0.0.1"
+            } else {
+                var host = conn.resolvedLocalHost
+                if host == nil || host == "127.0.0.1" || host == "::1" || host == "localhost" {
+                    host = MirooConnection.getLocalIPAddress()
+                }
+                targetHost = host ?? "127.0.0.1"
+            }
             conn.send(message: .setTransport(transport: newTransport.rawValue, udpPort: udpPort, sessionToken: sessionToken, serverHost: targetHost))
 
             // 2. Tear down current transport

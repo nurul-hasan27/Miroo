@@ -522,10 +522,11 @@ public final class MirooReceiver: @unchecked Sendable {
 
         if type == .udp {
             var host: NWEndpoint.Host = .name("localhost", nil)
-            if let sh = serverHost, !sh.isEmpty {
+            let isLoopback = isUSBActive
+            if let sh = serverHost, !sh.isEmpty, (isLoopback || (sh != "127.0.0.1" && sh != "localhost" && sh != "::1")) {
                 host = .name(sh, nil)
             } else if let conn = connection {
-                if let remoteHost = conn.resolvedRemoteHost {
+                if let remoteHost = conn.resolvedRemoteHost, (isLoopback || (remoteHost != "127.0.0.1" && remoteHost != "::1")) {
                     host = .name(remoteHost, nil)
                 } else if let remote = conn.connection.currentPath?.remoteEndpoint, case .hostPort(let h, _) = remote {
                     host = h
@@ -534,6 +535,7 @@ public final class MirooReceiver: @unchecked Sendable {
                 }
             }
 
+            print("[Miroo Receiver] Runtime Diagnostic: Host: \(host), Transport: UDP (Session: \(sessionToken))")
             print("[Miroo Receiver] Starting UDP Video Receiver Transport to \(host):\(udpPort) (Session: \(sessionToken))...")
             let udp = UDPVideoReceiverTransport(host: host, port: udpPort, sessionToken: sessionToken)
             udp.onFrameReceived = { [weak self] seq, pts, isKeyframe, data, timing, recvNs, netTransitMs, jitterMs in

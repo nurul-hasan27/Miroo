@@ -46,6 +46,7 @@ final class Phase13Tests {
         testMultiDeviceDisplaySessions()
         testPerDevicePersistentDisplayArrangement()
         testDynamicTransportSwitchingWithoutDisplayReset()
+        testDisplaySessionInputSafetyAndWiFiHostIntegrity()
 
         print("==================================================================")
         print("Phase 13 Verification Results: \(testsPassed) Passed, \(testsFailed) Failed")
@@ -494,5 +495,58 @@ final class Phase13Tests {
         session.switchTransport(to: .usb)
         assertTest(session.currentTransportType == .usb, "Dynamically switched to USB")
         assertTest(session.activeTransportName == "USB", "Active transport name updated to USB")
+    }
+
+    // MARK: - Test 11: Display Session Input Safety & Wi-Fi Host Resolution Integrity
+    static func testDisplaySessionInputSafetyAndWiFiHostIntegrity() {
+        print("\n[Test 11] Display Session Input Safety & Wi-Fi Host Resolution Audit...")
+
+        let ip = MirooConnection.getLocalIPAddress()
+        assertTest(ip != nil, "MirooConnection resolves local IP address successfully")
+        if let ip = ip {
+            assertTest(!ip.isEmpty && ip != "127.0.0.1" && ip != "::1", "Local IP address is non-loopback: \(ip)")
+        }
+
+        let dev = MirooDevice(
+            id: "input-safety-device",
+            deviceType: .iphone,
+            displayName: "Safety Phone",
+            modelName: "iPhone 11",
+            osVersion: "17.5.1",
+            isUSBAvailable: true,
+            isWiFiAvailable: true,
+            availability: .connected,
+            lastSeen: Date()
+        )
+
+        let session = MirooDisplaySession(
+            device: dev,
+            sessionID: "safety-session",
+            width: 1170,
+            height: 2532,
+            preferredTransport: .usb
+        )
+
+        // Simulate touch down so button is locked down
+        session.inputController.handleTouchEvent(
+            TouchEventPayload(phase: .began, touchID: 0, x: 0.5, y: 0.5),
+            displayID: 1
+        )
+        assertTest(session.inputController.isLeftButtonDown == true, "Left mouse button is held down during touch began")
+
+        // Switching transport must trigger releaseAllButtons()
+        session.switchTransport(to: .udp)
+        assertTest(session.inputController.isLeftButtonDown == false, "Left mouse button safely released upon transport handover")
+
+        // Simulate touch down again
+        session.inputController.handleTouchEvent(
+            TouchEventPayload(phase: .began, touchID: 0, x: 0.5, y: 0.5),
+            displayID: 1
+        )
+        assertTest(session.inputController.isLeftButtonDown == true, "Left mouse button held again")
+
+        // Stopping session must also release all buttons
+        session.stop(reason: .userDisconnected)
+        assertTest(session.inputController.isLeftButtonDown == false, "Left mouse button safely released upon session disconnect")
     }
 }

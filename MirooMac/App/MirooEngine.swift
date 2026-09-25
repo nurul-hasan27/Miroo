@@ -472,8 +472,17 @@ public final class MirooEngine: ObservableObject {
                 udpSessionToken: server?.udpSessionToken ?? 0
             )
 
-            // Resolve server host IP for UDP / client routing
-            let resolvedServerHost: String? = (negotiatedTransport == .usb) ? "127.0.0.1" : (connection.resolvedLocalHost ?? MirooEngine.getLocalIPAddress())
+            // Resolve server host IP for UDP / client routing (Strict: Wi-Fi must never be localhost)
+            let resolvedServerHost: String?
+            if negotiatedTransport == .usb {
+                resolvedServerHost = "127.0.0.1"
+            } else {
+                var host = connection.resolvedLocalHost
+                if host == nil || host == "127.0.0.1" || host == "::1" || host == "localhost" {
+                    host = MirooConnection.getLocalIPAddress()
+                }
+                resolvedServerHost = host
+            }
 
             // Send SESSION_STARTED, DISPLAY_INFO, and STREAM_CONFIG
             connection.send(message: .sessionStarted(SessionStartedPayload(sessionID: request.sessionID, width: targetWidth, height: targetHeight)))
@@ -859,30 +868,6 @@ public final class MirooEngine: ObservableObject {
     }
 
     public static func getLocalIPAddress() -> String? {
-        var address: String?
-        var ifaddr: UnsafeMutablePointer<ifaddrs>?
-        guard getifaddrs(&ifaddr) == 0, let firstAddr = ifaddr else { return nil }
-        defer { freeifaddrs(ifaddr) }
-
-        for ptr in sequence(first: firstAddr, next: { $0.pointee.ifa_next }) {
-            let flags = Int32(ptr.pointee.ifa_flags)
-            let addr = ptr.pointee.ifa_addr.pointee
-            if (flags & (IFF_UP|IFF_RUNNING|IFF_LOOPBACK)) == (IFF_UP|IFF_RUNNING) {
-                if addr.sa_family == UInt8(AF_INET) {
-                    var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-                    if getnameinfo(ptr.pointee.ifa_addr, socklen_t(addr.sa_len), &hostname, socklen_t(hostname.count), nil, 0, NI_NUMERICHOST) == 0 {
-                        let name = String(cString: ptr.pointee.ifa_name)
-                        let ip = String(cString: hostname)
-                        if name.hasPrefix("en") {
-                            return ip
-                        }
-                        if address == nil {
-                            address = ip
-                        }
-                    }
-                }
-            }
-        }
-        return address
+        MirooConnection.getLocalIPAddress()
     }
 }
