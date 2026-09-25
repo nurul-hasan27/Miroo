@@ -51,7 +51,7 @@ public final class ConnectionAuthorizer: @unchecked Sendable {
     public var autoAcceptTrustedDevices: Bool {
         get {
             if defaults.object(forKey: Self.autoAcceptKey) == nil {
-                return false
+                return true
             }
             return defaults.bool(forKey: Self.autoAcceptKey)
         }
