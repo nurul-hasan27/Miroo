@@ -225,20 +225,13 @@ public final class DisplayStreamCapturer: NSObject, SCStreamOutput, SCStreamDele
 
         frameCount += 1
 
-        // Calculate and print FPS every 60 frames
-        if frameCount % 60 == 0 {
+        if frameCount == 1 || frameCount % 60 == 0 {
             let now = CACurrentMediaTime()
             let elapsed = now - lastFpsTimestamp
-            let fps = (elapsed > 0) ? (60.0 / elapsed) : 60.0
+            let fps = (elapsed > 0 && frameCount > 1) ? (60.0 / elapsed) : 60.0
             lastFpsTimestamp = now
-
             let formatName = pixelFormatName(for: formatType)
-
-            print("")
-            print("[Miroo] Frame #\(frameCount)")
-            print("[Miroo] FPS: ~\(Int(round(fps)))")
-            print("[Miroo] Pixel format: \(formatName)")
-            print("[Miroo] Frame size: \(width)x\(height)")
+            print("[MirooCapturer] Captured frame #\(frameCount) (\(width)x\(height), format: \(formatName)), FPS: ~\(Int(round(fps)))")
         }
 
         // Calculate exact capture timestamp (in host nanoseconds using monotonic CACurrentMediaTime)

@@ -434,11 +434,11 @@ public final class VideoEncoder {
             }
         }
 
-        // 5. Print statistics every 60 frames
-        if totalFramesEncoded % 60 == 0 {
+        // 5. Print statistics every 60 frames (and frame 1)
+        if totalFramesEncoded == 1 || totalFramesEncoded % 60 == 0 {
             let now = CACurrentMediaTime()
             let elapsed = now - lastIntervalTime
-            let fps = (elapsed > 0) ? (Double(intervalFrames) / elapsed) : Double(targetFPS)
+            let fps = (elapsed > 0 && totalFramesEncoded > 1) ? (Double(intervalFrames) / elapsed) : Double(targetFPS)
             let currentBitrateMbps = (elapsed > 0) ? (Double(intervalBytes * 8) / elapsed / 1_000_000.0) : 0.0
             let avgFrameSizeKB = (intervalFrames > 0) ? (Double(intervalBytes) / Double(intervalFrames) / 1024.0) : 0.0
             let avgLatency = (intervalFrames > 0) ? (intervalLatencySum / Double(intervalFrames)) : frameLatencyMs

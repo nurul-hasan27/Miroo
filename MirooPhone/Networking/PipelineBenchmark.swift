@@ -629,3 +629,35 @@ public final class PipelineBenchmark: @unchecked Sendable {
         try data.write(to: URL(fileURLWithPath: path), options: .atomic)
     }
 }
+
+// MARK: - End-to-End Pipeline Diagnostic Logger (MIROO_DEBUG_PIPELINE)
+
+public enum MirooPipelineStage: String, Sendable {
+    case discovery         = "1. DISCOVERY"
+    case deviceSelection   = "2. DEVICE_SELECTION"
+    case connectionRequest = "3. CONNECTION_REQUEST"
+    case macApproval       = "4. MAC_APPROVAL"
+    case sessionCreation   = "5. SESSION_CREATION"
+    case virtualDisplay    = "6. VIRTUAL_DISPLAY"
+    case displayCapture    = "7. DISPLAY_CAPTURE"
+    case videoEncoder      = "8. VIDEO_ENCODER"
+    case transport         = "9. TRANSPORT"
+    case iphoneReceiver    = "10. IPHONE_RECEIVER"
+    case h264Decoder       = "11. H264_DECODER"
+    case metalRenderer     = "12. METAL_RENDERER"
+    case displayedDesktop  = "13. DISPLAYED_MAC_DESKTOP"
+}
+
+public enum PipelineLogger {
+    public static var isDebugPipelineEnabled: Bool {
+        return ProcessInfo.processInfo.environment["MIROO_DEBUG_PIPELINE"] == "1"
+    }
+
+    public static func log(_ stage: MirooPipelineStage, _ message: String, force: Bool = false) {
+        if isDebugPipelineEnabled || force {
+            let ts = String(format: "%.3f", CACurrentMediaTime())
+            print("[MirooPipeline][\(ts)][\(stage.rawValue)] \(message)")
+        }
+    }
+}
+

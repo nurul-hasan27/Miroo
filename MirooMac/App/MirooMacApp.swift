@@ -99,6 +99,20 @@ final class MirooMacApp: NSObject, NSApplicationDelegate {
             }
         }
 
+        if CommandLine.arguments.contains("--auto-extend") {
+            print("[Miroo] Auto-extend flag detected: will auto-extend display to first available phone...")
+            Task { @MainActor in
+                for _ in 0..<30 {
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    if let dev = engine.nearbyPhones.first {
+                        print("[Miroo] Auto-extend selecting discovered device '\(dev.displayName)' (\(dev.id))...")
+                        engine.connect(to: dev)
+                        break
+                    }
+                }
+            }
+        }
+
         // Check if running interactively inside a terminal TTY
         let isInteractiveTerminal = isatty(fileno(stdin)) != 0
         if isInteractiveTerminal {
