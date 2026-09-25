@@ -59,6 +59,7 @@ public final class MirooServer: @unchecked Sendable {
     public var onSessionEnded: ((SessionEndedPayload) -> Void)?
     public let adaptiveController = AdaptiveStreamingController()
     public var onAdaptiveDecision: ((AdaptiveDecision) -> Void)?
+    private let enableUSBMonitoring: Bool
 
     public init(
         serviceName: String = Host.current().localizedName ?? "Miroo Mac",
@@ -67,7 +68,8 @@ public final class MirooServer: @unchecked Sendable {
         targetFPS: Int = 60,
         bitrate: Int = 8_000_000,
         maxQueueDepth: Int = 1,
-        initialTransport: VideoTransportType = .tcp
+        initialTransport: VideoTransportType = .tcp,
+        enableUSBMonitoring: Bool = true
     ) {
         self.serviceName = serviceName
         self.currentTransportType = initialTransport
@@ -76,6 +78,7 @@ public final class MirooServer: @unchecked Sendable {
         self.targetFPS = targetFPS
         self.bitrate = bitrate
         self.frameQueue = FrameQueue(maxDepth: maxQueueDepth)
+        self.enableUSBMonitoring = enableUSBMonitoring
     }
 
     deinit {
@@ -132,7 +135,9 @@ public final class MirooServer: @unchecked Sendable {
         self.listener = newListener
 
         self.startMetricsTimer()
-        self.startUSBMonitoring()
+        if enableUSBMonitoring {
+            self.startUSBMonitoring()
+        }
     }
 
     public func stop() {
@@ -776,8 +781,11 @@ public final class MirooServer: @unchecked Sendable {
     }
 
     private func printMetricsSummary() {
+        guard let active = activeConnection, active.state == .streaming else {
+            return
+        }
         let snap = metrics.snapshot()
-        let status = activeConnection?.state.description ?? "Disconnected"
+        let status = active.state.description
         let queueDepth = frameQueue.count
 
         print("")

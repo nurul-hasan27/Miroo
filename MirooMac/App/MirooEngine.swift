@@ -16,6 +16,7 @@ import ScreenCaptureKit
 import ServiceManagement
 import Combine
 import Network
+import Darwin
 #if canImport(MirooNetworking)
 import MirooNetworking
 #endif
@@ -235,7 +236,8 @@ public final class MirooEngine: ObservableObject {
             targetFPS: targetFPS,
             bitrate: targetBitrateMbps * 1_000_000,
             maxQueueDepth: 1,
-            initialTransport: initialTransport
+            initialTransport: initialTransport,
+            enableUSBMonitoring: false
         )
         self.server = server
 
@@ -470,6 +472,9 @@ public final class MirooEngine: ObservableObject {
                 udpSessionToken: server?.udpSessionToken ?? 0
             )
 
+            // Resolve server host IP for UDP / client routing
+            let resolvedServerHost: String? = (negotiatedTransport == .usb) ? "127.0.0.1" : (connection.resolvedLocalHost ?? MirooEngine.getLocalIPAddress())
+
             // Send SESSION_STARTED, DISPLAY_INFO, and STREAM_CONFIG
             connection.send(message: .sessionStarted(SessionStartedPayload(sessionID: request.sessionID, width: targetWidth, height: targetHeight)))
             let displayMsg = MirooMessage.displayInfo(width: targetWidth, height: targetHeight, scaleFactor: 2.0, name: "Miroo - \(request.clientName)")
@@ -483,7 +488,7 @@ public final class MirooEngine: ObservableObject {
                 transport: negotiatedTransport.rawValue,
                 udpPort: server?.udpPort ?? 51042,
                 sessionToken: server?.udpSessionToken ?? 0,
-                serverHost: nil
+                serverHost: resolvedServerHost
             )
             connection.send(message: displayMsg)
             connection.send(message: streamMsg)
@@ -525,46 +530,100 @@ public final class MirooEngine: ObservableObject {
             statusMessage = "Connecting to \(dev.displayName)..."
             print("[MirooEngine] Extending display to \(dev.displayName) (USB: \(dev.isUSBAvailable), Wi-Fi: \(dev.isWiFiAvailable))...")
 
-            let targetEndpoint: NWEndpoint?
-            let transport: VideoTransportType
             if dev.isUSBAvailable {
-                targetEndpoint = .hostPort(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: 51065)!)
-                transport = .usb
+                // Find USB device ID from attached devices
+                let targetDeviceID = self.usbAttachedSerialMap.first(where: { $0.value == dev.id })?.key ?? self.usbmux.attachedDevices.keys.first
+                guard let usbID = targetDeviceID else {
+                    print("[MirooEngine] No attached usbmuxd device ID found for \(dev.displayName) (\(dev.id))")
+                    self.statusMessage = "Error: USB device not found"
+                    continue
+                }
+
+                print("[MirooEngine] Opening usbmuxd tunnel to device ID \(usbID) on port \(USBMuxClient.targetDevicePort)...")
+                self.usbmux.connectToDevice(deviceID: usbID, port: USBMuxClient.targetDevicePort, timeoutSeconds: 5.0) { [weak self] result in
+                    guard let self = self else { return }
+                    Task { @MainActor [weak self] in
+                        guard let self = self else { return }
+                        switch result {
+                        case .success(let nwConn):
+                            print("[MirooEngine] USB tunnel opened to \(dev.displayName)! Starting session...")
+                            let conn = MirooConnection(connection: nwConn, queue: DispatchQueue(label: "com.miroo.client.\(dev.id)", qos: .userInteractive))
+                            var hasStarted = false
+                            conn.onStateChanged = { [weak self, weak conn] state in
+                                guard let self = self, let conn = conn else { return }
+                                if (state == .connected || state == .streaming) && !hasStarted {
+                                    hasStarted = true
+                                    Task { @MainActor in
+                                        let sID = UUID().uuidString
+                                        let req = ConnectionRequestPayload(
+                                            clientID: dev.id,
+                                            clientName: dev.displayName,
+                                            clientModel: dev.modelName,
+                                            protocolVersion: Int(MirooHeader.currentVersion),
+                                            preferredWidth: Int(VirtualDisplayManager.physicalWidth),
+                                            preferredHeight: Int(VirtualDisplayManager.physicalHeight),
+                                            preferredFPS: self.targetFPS,
+                                            preferredTransport: VideoTransportType.usb.rawValue,
+                                            sessionID: sID
+                                        )
+                                        await self.startDisplaySession(for: req, connection: conn)
+                                    }
+                                }
+                            }
+                            conn.start()
+                            if (conn.state == .connected || conn.state == .streaming) && !hasStarted {
+                                hasStarted = true
+                                let sID = UUID().uuidString
+                                let req = ConnectionRequestPayload(
+                                    clientID: dev.id,
+                                    clientName: dev.displayName,
+                                    clientModel: dev.modelName,
+                                    protocolVersion: Int(MirooHeader.currentVersion),
+                                    preferredWidth: Int(VirtualDisplayManager.physicalWidth),
+                                    preferredHeight: Int(VirtualDisplayManager.physicalHeight),
+                                    preferredFPS: self.targetFPS,
+                                    preferredTransport: VideoTransportType.usb.rawValue,
+                                    sessionID: sID
+                                )
+                                await self.startDisplaySession(for: req, connection: conn)
+                            }
+                        case .failure(let err):
+                            print("[MirooEngine] USB tunnel failed to \(dev.displayName): \(err.localizedDescription)")
+                            self.statusMessage = "USB Connection failed: \(err.localizedDescription)"
+                        }
+                    }
+                }
             } else if let ep = browser.endpoint(for: dev.id) {
-                targetEndpoint = ep
-                transport = (preferredTransport == "udp") ? .udp : .tcp
+                let transport: VideoTransportType = (preferredTransport == "udp") ? .udp : .tcp
+                let conn = MirooConnection(to: ep, queue: DispatchQueue(label: "com.miroo.client.\(dev.id)", qos: .userInteractive))
+                var hasStarted = false
+                conn.onStateChanged = { [weak self, weak conn] (state: MirooConnectionState) in
+                    guard let self = self, let conn = conn else { return }
+                    if (state == .connected || state == .streaming) && !hasStarted {
+                        hasStarted = true
+                        print("[MirooEngine] Connected to \(dev.displayName)! Initiating display session...")
+                        Task { @MainActor in
+                            let sID = UUID().uuidString
+                            let req = ConnectionRequestPayload(
+                                clientID: dev.id,
+                                clientName: dev.displayName,
+                                clientModel: dev.modelName,
+                                protocolVersion: Int(MirooHeader.currentVersion),
+                                preferredWidth: Int(VirtualDisplayManager.physicalWidth),
+                                preferredHeight: Int(VirtualDisplayManager.physicalHeight),
+                                preferredFPS: self.targetFPS,
+                                preferredTransport: transport.rawValue,
+                                sessionID: sID
+                            )
+                            await self.startDisplaySession(for: req, connection: conn)
+                        }
+                    }
+                }
+                conn.start()
             } else {
                 print("[MirooEngine] No endpoint found for \(dev.displayName)")
                 continue
             }
-
-            guard let endpoint = targetEndpoint else { continue }
-
-            let conn = MirooConnection(to: endpoint, queue: DispatchQueue(label: "com.miroo.client.\(dev.id)", qos: .userInteractive))
-
-            conn.onStateChanged = { [weak self, weak conn] (state: MirooConnectionState) in
-                guard let self = self, let conn = conn else { return }
-                if state == .connected {
-                    print("[MirooEngine] Connected to \(dev.displayName)! Initiating display session...")
-                    Task { @MainActor in
-                        let sID = UUID().uuidString
-                        let req = ConnectionRequestPayload(
-                            clientID: dev.id,
-                            clientName: dev.displayName,
-                            clientModel: dev.modelName,
-                            protocolVersion: Int(MirooHeader.currentVersion),
-                            preferredWidth: Int(VirtualDisplayManager.physicalWidth),
-                            preferredHeight: Int(VirtualDisplayManager.physicalHeight),
-                            preferredFPS: self.targetFPS,
-                            preferredTransport: transport.rawValue,
-                            sessionID: sID
-                        )
-                        await self.startDisplaySession(for: req, connection: conn)
-                    }
-                }
-            }
-
-            conn.start()
         }
     }
 
@@ -642,9 +701,9 @@ public final class MirooEngine: ObservableObject {
 
     /// Switches the display orientation between portrait and landscape.
     public func switchOrientation(to newOrientation: MirooOrientation) async {
-        guard isRunning, let manager = displayManager, let capturer = capturer, let encoder = encoder, let server = server else { return }
+        guard isRunning else { return }
         guard !isSwitchingOrientation else { return }
-        guard manager.currentOrientation != newOrientation else { return }
+        guard currentOrientation != newOrientation else { return }
 
         isSwitchingOrientation = true
         defer { isSwitchingOrientation = false }
@@ -652,10 +711,8 @@ public final class MirooEngine: ObservableObject {
         print("[MirooEngine] Switching orientation to \(newOrientation.rawValue)...")
         inputController?.releaseAllButtons()
 
-        let success = manager.setOrientation(newOrientation)
-        guard success else {
-            print("[MirooEngine] ERROR: Failed to switch virtual display orientation.")
-            return
+        for sess in activeSessions.values {
+            await sess.switchOrientation(to: newOrientation)
         }
 
         let newWidth = (newOrientation == .landscape) ? Int(VirtualDisplayManager.physicalHeight) : Int(VirtualDisplayManager.physicalWidth)
@@ -664,30 +721,16 @@ public final class MirooEngine: ObservableObject {
         self.activeHeight = newHeight
         self.currentOrientation = newOrientation
 
-        // Update capturer resolution
-        do {
-            try await capturer.updateResolution(targetWidth: newWidth, targetHeight: newHeight)
-        } catch {
-            await capturer.stopCapture()
-            try? await capturer.startCapture(
-                displayID: manager.displayID,
-                displayName: VirtualDisplayManager.defaultDisplayName,
-                targetWidth: newWidth,
-                targetHeight: newHeight,
-                targetFPS: targetFPS
-            )
+        // Also update legacy single-session if active
+        if let manager = displayManager, let capturer = capturer, let encoder = encoder, let server = server {
+            if manager.currentOrientation != newOrientation {
+                _ = manager.setOrientation(newOrientation)
+                try? await capturer.updateResolution(targetWidth: newWidth, targetHeight: newHeight)
+                try? encoder.reconfigure(width: Int32(newWidth), height: Int32(newHeight))
+                server.sendStreamConfig(width: newWidth, height: newHeight, orientation: newOrientation)
+                server.frameQueue.requestImmediateKeyframe()
+            }
         }
-
-        // Reconfigure encoder
-        do {
-            try encoder.reconfigure(width: Int32(newWidth), height: Int32(newHeight))
-        } catch {
-            print("[MirooEngine] Failed to reconfigure encoder: \(error.localizedDescription)")
-        }
-
-        // Notify client and force immediate keyframe
-        server.sendStreamConfig(width: newWidth, height: newHeight, orientation: newOrientation)
-        server.frameQueue.requestImmediateKeyframe()
         print("[MirooEngine] Orientation switched to \(newOrientation.rawValue) (\(newWidth)x\(newHeight)).")
     }
 
@@ -796,16 +839,50 @@ public final class MirooEngine: ObservableObject {
     }
 
     private func refreshTelemetry() {
-        guard let server = server else { return }
-        updateActiveTransport()
+        if let firstSession = activeSessions.values.first {
+            self.currentFPS = firstSession.currentFPS
+            self.currentBitrateMbps = firstSession.currentBitrateMbps
+            self.currentPipelineLatencyMs = firstSession.currentLatencyMs
+            self.activeTransport = firstSession.activeTransportName.uppercased()
+        } else if let server = server {
+            updateActiveTransport()
 
-        let snap = server.metrics.snapshot()
-        self.currentFPS = snap.sendFps
-        self.currentBitrateMbps = snap.sendThroughputMbps
+            let snap = server.metrics.snapshot()
+            self.currentFPS = snap.sendFps
+            self.currentBitrateMbps = snap.sendThroughputMbps
 
-        let benchReport = PipelineBenchmark.shared.generateReport()
-        if benchReport.glassToRender.p50 > 0 {
-            self.currentPipelineLatencyMs = benchReport.glassToRender.p50
+            let benchReport = PipelineBenchmark.shared.generateReport()
+            if benchReport.glassToRender.p50 > 0 {
+                self.currentPipelineLatencyMs = benchReport.glassToRender.p50
+            }
         }
+    }
+
+    public static func getLocalIPAddress() -> String? {
+        var address: String?
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddr) == 0, let firstAddr = ifaddr else { return nil }
+        defer { freeifaddrs(ifaddr) }
+
+        for ptr in sequence(first: firstAddr, next: { $0.pointee.ifa_next }) {
+            let flags = Int32(ptr.pointee.ifa_flags)
+            let addr = ptr.pointee.ifa_addr.pointee
+            if (flags & (IFF_UP|IFF_RUNNING|IFF_LOOPBACK)) == (IFF_UP|IFF_RUNNING) {
+                if addr.sa_family == UInt8(AF_INET) {
+                    var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                    if getnameinfo(ptr.pointee.ifa_addr, socklen_t(addr.sa_len), &hostname, socklen_t(hostname.count), nil, 0, NI_NUMERICHOST) == 0 {
+                        let name = String(cString: ptr.pointee.ifa_name)
+                        let ip = String(cString: hostname)
+                        if name.hasPrefix("en") {
+                            return ip
+                        }
+                        if address == nil {
+                            address = ip
+                        }
+                    }
+                }
+            }
+        }
+        return address
     }
 }
