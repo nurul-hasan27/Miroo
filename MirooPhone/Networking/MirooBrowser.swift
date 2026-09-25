@@ -175,8 +175,7 @@ public final class MirooBrowser: @unchecked Sendable {
 
     /// Registers or updates a device directly (e.g. from USB multiplexing or manual pairing).
     public func upsertDirectDevice(_ device: MirooDevice) {
-        queue.async { [weak self] in
-            guard let self = self else { return }
+        queue.sync {
             self.directDevices[device.id] = device
 
             var map: [String: MirooDevice] = [:]
@@ -190,12 +189,60 @@ public final class MirooBrowser: @unchecked Sendable {
         }
     }
 
+    /// Manually or programmatically inserts/merges a discovered device.
+    public func upsertDiscoveredDevice(_ device: MirooDevice) {
+        queue.sync {
+            guard device.id != DeviceIdentity.currentID else { return }
+            var map: [String: MirooDevice] = [:]
+            for d in self.discoveredDevices {
+                map[d.id] = d
+            }
+            if var existing = map[device.id] {
+                if device.isUSBAvailable { existing.isUSBAvailable = true }
+                if device.isWiFiAvailable { existing.isWiFiAvailable = true }
+                existing.displayName = device.displayName
+                existing.modelName = device.modelName
+                if let os = device.osVersion { existing.osVersion = os }
+                existing.availability = device.availability
+                existing.lastSeen = Date()
+                if let ep = device.endpointDescription { existing.endpointDescription = ep }
+                map[device.id] = existing
+            } else {
+                map[device.id] = device
+            }
+            let sorted = Array(map.values).sorted { $0.displayName < $1.displayName }
+            self.discoveredDevices = sorted
+            self.onDevicesUpdated?(sorted)
+        }
+    }
+
     /// Removes a direct device (e.g. when USB cable is detached).
     public func removeDirectDevice(id: String) {
-        queue.async { [weak self] in
-            guard let self = self else { return }
+        queue.sync {
             self.directDevices.removeValue(forKey: id)
-            self.discoveredDevices.removeAll { $0.id == id && !$0.isWiFiAvailable }
+            var map: [String: MirooDevice] = [:]
+            for d in self.discoveredDevices {
+                map[d.id] = d
+            }
+            if var existing = map[id] {
+                existing.isUSBAvailable = false
+                if !existing.isWiFiAvailable {
+                    map.removeValue(forKey: id)
+                } else {
+                    map[id] = existing
+                }
+            }
+            let sorted = Array(map.values).sorted { $0.displayName < $1.displayName }
+            self.discoveredDevices = sorted
+            self.onDevicesUpdated?(sorted)
+        }
+    }
+
+    /// Removes a discovered device (e.g. when Bonjour endpoint disappears or explicitly cleared).
+    public func removeDiscoveredDevice(id: String) {
+        queue.sync {
+            self.directDevices.removeValue(forKey: id)
+            self.discoveredDevices.removeAll { $0.id == id }
             self.onDevicesUpdated?(self.discoveredDevices)
         }
     }

@@ -80,6 +80,40 @@ public struct MirooDevice: Identifiable, Hashable, Sendable, Codable {
         self.endpointDescription = endpointDescription
     }
 
+    public var bestTransportBadge: String {
+        if isUSBAvailable { return "USB" }
+        if isWiFiAvailable { return "Wi-Fi" }
+        return "None"
+    }
+
+    public init(
+        txtRecord: [String: String],
+        fallbackName: String,
+        endpointDescription: String? = nil
+    ) {
+        let devID = txtRecord["id"] ?? UUID().uuidString
+        let rawType = txtRecord["type"] ?? "iphone"
+        let devType: MirooDeviceType = (rawType.lowercased() == "mac") ? .mac : .iphone
+        let dispName = txtRecord["name"] ?? fallbackName
+        let model = txtRecord["model"] ?? (devType == .iphone ? "iPhone" : "Mac")
+        let osVer = txtRecord["os"]
+        let isUsb = (txtRecord["usb"] == "1")
+        let avail = MirooDeviceAvailability(rawValue: txtRecord["state"] ?? "") ?? .available
+
+        self.init(
+            id: devID,
+            deviceType: devType,
+            displayName: dispName,
+            modelName: model,
+            osVersion: osVer,
+            isUSBAvailable: isUsb,
+            isWiFiAvailable: true,
+            availability: avail,
+            lastSeen: Date(),
+            endpointDescription: endpointDescription
+        )
+    }
+
     public func hash(into hasher: inout Hasher) {
         hasher.combine(id)
     }
