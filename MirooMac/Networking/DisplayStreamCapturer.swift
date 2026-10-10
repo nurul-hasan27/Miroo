@@ -11,6 +11,9 @@ import CoreMedia
 import CoreVideo
 import ScreenCaptureKit
 import QuartzCore
+#if canImport(MirooNetworking)
+import MirooNetworking
+#endif
 
 public enum CapturerError: LocalizedError {
     case permissionDenied
