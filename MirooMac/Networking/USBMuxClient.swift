@@ -109,9 +109,11 @@ public final class USBMuxClient: @unchecked Sendable {
     private var isMonitoring = false
 
     public private(set) var attachedDevices: [UInt32: USBMuxDevice] = [:]
+    public var isUSBAvailable: Bool { !attachedDevices.isEmpty }
 
     public var onDeviceAttached: ((USBMuxDevice) -> Void)?
     public var onDeviceDetached: ((UInt32) -> Void)?
+    public var onAvailabilityChanged: ((Bool) -> Void)?
 
     public init() {}
 
@@ -136,7 +138,11 @@ public final class USBMuxClient: @unchecked Sendable {
             self.monitorConnection?.cancel()
             self.monitorConnection = nil
             self.receiveBuffer.removeAll()
+            let hadDevices = !self.attachedDevices.isEmpty
             self.attachedDevices.removeAll()
+            if hadDevices {
+                self.onAvailabilityChanged?(false)
+            }
         }
     }
 
@@ -211,6 +217,7 @@ public final class USBMuxClient: @unchecked Sendable {
                     attachedDevices[rawID] = dev
                     print("[USBMux] iOS Device Attached via USB: ID=\(rawID), Serial=\(serial)")
                     onDeviceAttached?(dev)
+                    onAvailabilityChanged?(true)
                 }
             }
 
@@ -220,6 +227,7 @@ public final class USBMuxClient: @unchecked Sendable {
                 attachedDevices.removeValue(forKey: rawID)
                 print("[USBMux] iOS Device Detached from USB: ID=\(rawID)")
                 onDeviceDetached?(rawID)
+                onAvailabilityChanged?(!attachedDevices.isEmpty)
             }
 
         case "Result":
