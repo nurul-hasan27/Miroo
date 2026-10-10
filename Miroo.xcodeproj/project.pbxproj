@@ -1,0 +1,249 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		4F000000000000000000001E /* MirooCore in Frameworks */ = {isa = PBXBuildFile; productRef = 4F0000000000000000000014 /* MirooCore */; };
+		4F000000000000000000001F /* MirooMedia in Frameworks */ = {isa = PBXBuildFile; productRef = 4F0000000000000000000015 /* MirooMedia */; };
+		4F0000000000000000000020 /* MirooNet in Frameworks */ = {isa = PBXBuildFile; productRef = 4F0000000000000000000016 /* MirooNet */; };
+		4F0000000000000000000021 /* MirooSession in Frameworks */ = {isa = PBXBuildFile; productRef = 4F0000000000000000000017 /* MirooSession */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		4F0000000000000000000003 /* Miroo.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Miroo.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		4F0000000000000000000007 /* Exceptions for "PhoneApp" folder in "Miroo" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 4F0000000000000000000002 /* Miroo */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		4F0000000000000000000006 /* PhoneApp */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				4F0000000000000000000007,
+			);
+			path = PhoneApp;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		4F0000000000000000000009 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				4F000000000000000000001E /* MirooCore in Frameworks */,
+				4F000000000000000000001F /* MirooMedia in Frameworks */,
+				4F0000000000000000000020 /* MirooNet in Frameworks */,
+				4F0000000000000000000021 /* MirooSession in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		4F0000000000000000000004 = {
+			isa = PBXGroup;
+			children = (
+				4F0000000000000000000006 /* PhoneApp */,
+				4F0000000000000000000005 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		4F0000000000000000000005 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				4F0000000000000000000003 /* Miroo.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		4F0000000000000000000002 /* Miroo */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 4F000000000000000000000C /* Build configuration list for PBXNativeTarget "Miroo" */;
+			buildPhases = (
+				4F0000000000000000000008 /* Sources */,
+				4F0000000000000000000009 /* Frameworks */,
+				4F000000000000000000000A /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				4F0000000000000000000006 /* PhoneApp */,
+			);
+			name = Miroo;
+			packageProductDependencies = (
+				4F0000000000000000000014 /* MirooCore */,
+				4F0000000000000000000015 /* MirooMedia */,
+				4F0000000000000000000016 /* MirooNet */,
+				4F0000000000000000000017 /* MirooSession */,
+			);
+			productName = Miroo;
+			productReference = 4F0000000000000000000003 /* Miroo.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		4F0000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2620;
+				LastUpgradeCheck = 2620;
+				TargetAttributes = {
+					4F0000000000000000000002 = {
+						CreatedOnToolsVersion = 26.2;
+					};
+				};
+			};
+			buildConfigurationList = 4F000000000000000000000B /* Build configuration list for PBXProject "Miroo" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 4F0000000000000000000004;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				4F0000000000000000000011 /* XCLocalSwiftPackageReference "Miroo" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 4F0000000000000000000005 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				4F0000000000000000000002 /* Miroo */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		4F000000000000000000000A /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		4F0000000000000000000008 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		4F000000000000000000000D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO; CLANG_ENABLE_MODULES = YES; CLANG_ENABLE_OBJC_ARC = YES;
+DEVELOPMENT_TEAM = 6NNWP5NQ7Z; ENABLE_USER_SCRIPT_SANDBOXING = YES; GCC_C_LANGUAGE_STANDARD = gnu17;
+IPHONEOS_DEPLOYMENT_TARGET = 16.0; LOCALIZATION_PREFERS_STRING_CATALOGS = YES; SDKROOT = iphoneos; DEBUG_INFORMATION_FORMAT = dwarf; ENABLE_TESTABILITY = YES; GCC_OPTIMIZATION_LEVEL = 0;
+				ONLY_ACTIVE_ARCH = YES; SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)"; SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		4F000000000000000000000E /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO; CLANG_ENABLE_MODULES = YES; CLANG_ENABLE_OBJC_ARC = YES;
+DEVELOPMENT_TEAM = 6NNWP5NQ7Z; ENABLE_USER_SCRIPT_SANDBOXING = YES; GCC_C_LANGUAGE_STANDARD = gnu17;
+IPHONEOS_DEPLOYMENT_TARGET = 16.0; LOCALIZATION_PREFERS_STRING_CATALOGS = YES; SDKROOT = iphoneos; DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym"; ENABLE_NS_ASSERTIONS = NO; SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O"; VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		4F000000000000000000000F /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; DEVELOPMENT_TEAM = 6NNWP5NQ7Z;
+				GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = PhoneApp/Info.plist; MARKETING_VERSION = 2.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.nurulhasan.MirooPhone; PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = 1; ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+			};
+			name = Debug;
+		};
+		4F0000000000000000000010 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; DEVELOPMENT_TEAM = 6NNWP5NQ7Z;
+				GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = PhoneApp/Info.plist; MARKETING_VERSION = 2.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.nurulhasan.MirooPhone; PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = 1; ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		4F000000000000000000000B /* Build configuration list for PBXProject "Miroo" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				4F000000000000000000000D /* Debug */,
+				4F000000000000000000000E /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		4F000000000000000000000C /* Build configuration list for PBXNativeTarget "Miroo" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				4F000000000000000000000F /* Debug */,
+				4F0000000000000000000010 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		4F0000000000000000000011 /* XCLocalSwiftPackageReference "Miroo" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = .;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		4F0000000000000000000014 /* MirooCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MirooCore;
+		};
+		4F0000000000000000000015 /* MirooMedia */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MirooMedia;
+		};
+		4F0000000000000000000016 /* MirooNet */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MirooNet;
+		};
+		4F0000000000000000000017 /* MirooSession */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MirooSession;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 4F0000000000000000000001 /* Project object */;
+}
