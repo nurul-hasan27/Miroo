@@ -1,0 +1,250 @@
+diff --git a/MirooMac/App/MirooMacApp.swift b/MirooMac/App/MirooMacApp.swift
+index 32b24cd..37ccf0e 100644
+--- a/MirooMac/App/MirooMacApp.swift
++++ b/MirooMac/App/MirooMacApp.swift
+@@ -194,6 +194,7 @@ final class MirooMacApp: NSObject, NSApplicationDelegate {
+         func moveAndPersist(manager: VirtualDisplayManager, targetX: CGFloat, targetY: CGFloat) -> Bool {
+             let id = manager.displayID
+             guard id != 0 else { return false }
++            manager.suppressReconfiguration(for: 1.5)
+             var config: CGDisplayConfigRef?
+             guard CGBeginDisplayConfiguration(&config) == .success, let cfg = config else { return false }
+             CGConfigureDisplayMirrorOfDisplay(cfg, id, kCGNullDirectDisplay)
+@@ -217,15 +218,19 @@ final class MirooMacApp: NSObject, NSApplicationDelegate {
+             return currentMain == initialMainBounds
+         }
+ 
+-        // --- TEST 1: Left Position (5 Reconnect Cycles, target: (-2532, 200)) ---
+-        print("\n--- [Audit 1] Left Position (5 Reconnect Cycles, target: (-2532, 200)) ---")
++        // Clear any residual arrangement state from prior runs so audit starts with a clean baseline
++        DisplayArrangementStore.shared.clearArrangements()
++
++        // --- TEST 1: Left Position (5 Reconnect Cycles, target: Left of primary, Y=200) ---
++        print("\n--- [Audit 1] Left Position (5 Reconnect Cycles) ---")
+         var leftCyclesSuccess = true
+         let mgr1 = VirtualDisplayManager()
+         guard mgr1.create() else {
+             print("ERROR: Failed to create virtual display for initial Left move")
+             exit(1)
+         }
+-        let initialLeftOk = moveAndPersist(manager: mgr1, targetX: -2532, targetY: 200)
++        let leftX = initialMainBounds.minX - CGDisplayBounds(mgr1.displayID).width
++        let initialLeftOk = moveAndPersist(manager: mgr1, targetX: leftX, targetY: 200)
+         let leftBounds0 = CGDisplayBounds(mgr1.displayID)
+         let expectedLeftOrigin = leftBounds0.origin
+         print("Initial Left Move (ID \(mgr1.displayID)): origin=(\(expectedLeftOrigin.x), \(expectedLeftOrigin.y)), success=\(initialLeftOk)")
+@@ -288,14 +293,15 @@ final class MirooMacApp: NSObject, NSApplicationDelegate {
+         }
+         if !rightCyclesSuccess { auditPassed = false }
+ 
+-        // --- TEST 3: Above Position (1 Reconnect Cycle, target: (100, -1170)) ---
+-        print("\n--- [Audit 3] Above Position (1 Reconnect Cycle, target: (100, -1170)) ---")
++        // --- TEST 3: Above Position (1 Reconnect Cycle, target: Above primary, X=100) ---
++        print("\n--- [Audit 3] Above Position (1 Reconnect Cycle) ---")
+         let mgr3 = VirtualDisplayManager()
+         guard mgr3.create() else {
+             print("ERROR: Failed to create display for Above move")
+             exit(1)
+         }
+-        _ = moveAndPersist(manager: mgr3, targetX: 100, targetY: -1170)
++        let aboveY = initialMainBounds.minY - CGDisplayBounds(mgr3.displayID).height
++        _ = moveAndPersist(manager: mgr3, targetX: 100, targetY: aboveY)
+         let expectedAboveOrigin = CGDisplayBounds(mgr3.displayID).origin
+         mgr3.destroy()
+         RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.5))
+@@ -348,7 +354,8 @@ final class MirooMacApp: NSObject, NSApplicationDelegate {
+         print("\n--- [Audit 5] Transport Invariance (USB -> Wi-Fi -> USB) ---")
+         let mgr5 = VirtualDisplayManager()
+         _ = mgr5.create()
+-        _ = moveAndPersist(manager: mgr5, targetX: -2532, targetY: 200)
++        let leftX5 = initialMainBounds.minX - CGDisplayBounds(mgr5.displayID).width
++        _ = moveAndPersist(manager: mgr5, targetX: leftX5, targetY: 200)
+         let expectedTransportOrigin = CGDisplayBounds(mgr5.displayID).origin
+         mgr5.destroy()
+         RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.5))
+diff --git a/MirooMac/Networking/VirtualDisplayManager.swift b/MirooMac/Networking/VirtualDisplayManager.swift
+index c97f841..c6e35e2 100644
+--- a/MirooMac/Networking/VirtualDisplayManager.swift
++++ b/MirooMac/Networking/VirtualDisplayManager.swift
+@@ -54,17 +54,38 @@ public final class VirtualDisplayManager {
+     private var screenParamsObserver: Any?
+     private let stateLock = os_unfair_lock_t.allocate(capacity: 1)
+     private var _isApplyingArrangement: Bool = false
++    private var _suppressReconfigurationUntil: Date = Date.distantPast
+ 
+-    private func setIsApplyingArrangement(_ value: Bool) {
++    public func suppressReconfiguration(for seconds: TimeInterval = 1.0) {
+         os_unfair_lock_lock(stateLock)
+-        _isApplyingArrangement = value
++        let deadline = Date().addingTimeInterval(seconds)
++        if deadline > _suppressReconfigurationUntil {
++            _suppressReconfigurationUntil = deadline
++        }
++        _isApplyingArrangement = true
+         os_unfair_lock_unlock(stateLock)
+     }
+ 
+-    private func getIsApplyingArrangement() -> Bool {
++    public var isReconfigurationSuppressed: Bool {
+         os_unfair_lock_lock(stateLock)
+         defer { os_unfair_lock_unlock(stateLock) }
+-        return _isApplyingArrangement
++        return Date() < _suppressReconfigurationUntil || _isApplyingArrangement
++    }
++
++    public func setIsApplyingArrangement(_ value: Bool) {
++        os_unfair_lock_lock(stateLock)
++        _isApplyingArrangement = value
++        if value {
++            let deadline = Date().addingTimeInterval(1.0)
++            if deadline > _suppressReconfigurationUntil {
++                _suppressReconfigurationUntil = deadline
++            }
++        }
++        os_unfair_lock_unlock(stateLock)
++    }
++
++    public func getIsApplyingArrangement() -> Bool {
++        return isReconfigurationSuppressed
+     }
+ 
+     public var displayID: CGDirectDisplayID {
+@@ -83,12 +104,7 @@ public final class VirtualDisplayManager {
+         guard let b = bridge, b.displayID != 0 else { return false }
+ 
+         // Block screen reconfiguration notification from treating mode switch as user rearrangement
+-        setIsApplyingArrangement(true)
+-        defer {
+-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+-                self?.setIsApplyingArrangement(false)
+-            }
+-        }
++        suppressReconfiguration(for: 2.0)
+ 
+         // Capture current arrangement before switching orientation
+         if CGDisplayIsOnline(b.displayID) != 0 {
+@@ -182,20 +198,20 @@ public final class VirtualDisplayManager {
+     }
+ 
+     private func handleDisplayReconfiguration(displayID: CGDirectDisplayID, flags: CGDisplayChangeSummaryFlags) {
+-        guard let b = bridge, b.displayID != 0 else { return }
++        guard isCreated, let b = bridge, b.displayID != 0, b.isValid else { return }
++        guard !isReconfigurationSuppressed else { return }
+         guard DisplayArrangementStore.shouldProcessReconfiguration(
+             displayID: displayID,
+             targetMirooID: b.displayID,
+             flags: flags,
+-            isApplyingArrangement: getIsApplyingArrangement()
++            isApplyingArrangement: isReconfigurationSuppressed
+         ) else { return }
+         handleScreenParametersChanged()
+     }
+ 
+-
+     private func handleScreenParametersChanged() {
+-        guard !getIsApplyingArrangement() else { return }
+-        guard let b = bridge, b.displayID != 0, CGDisplayIsOnline(b.displayID) != 0 else { return }
++        guard !isReconfigurationSuppressed else { return }
++        guard isCreated, let b = bridge, b.displayID != 0, b.isValid, CGDisplayIsOnline(b.displayID) != 0 else { return }
+ 
+         let mirooBounds = CGDisplayBounds(b.displayID)
+         let mainID = CGMainDisplayID()
+@@ -226,12 +242,7 @@ public final class VirtualDisplayManager {
+         }
+ 
+         // Prevent initial creation notifications from overwriting saved arrangement
+-        setIsApplyingArrangement(true)
+-        defer {
+-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+-                self?.setIsApplyingArrangement(false)
+-            }
+-        }
++        suppressReconfiguration(for: 2.0)
+ 
+         let nameToUse = self.customDisplayName ?? Self.defaultDisplayName
+         print("[Miroo] Creating virtual display '\(nameToUse)' in \(currentOrientation)...")
+@@ -294,11 +305,14 @@ public final class VirtualDisplayManager {
+         selectHiDPIMode()
+ 
+         // Allow WindowServer to commit the mode switch
+-        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.5))
++        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
+ 
+         // Step 3: Re-apply arrangement after HiDPI mode switch to guarantee exact placement
+         applyDisplayArrangement(restoreSaved: true)
+ 
++        // Allow WindowServer to commit the final arrangement
++        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
++
+         return true
+     }
+ 
+@@ -306,12 +320,7 @@ public final class VirtualDisplayManager {
+     public func destroy() {
+         guard isCreated, let b = bridge else { return }
+ 
+-        setIsApplyingArrangement(true)
+-        defer {
+-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+-                self?.setIsApplyingArrangement(false)
+-            }
+-        }
++        suppressReconfiguration(for: 2.0)
+ 
+         // Save last known position before destroying
+         if CGDisplayIsOnline(b.displayID) != 0 {
+@@ -355,12 +364,7 @@ public final class VirtualDisplayManager {
+         guard let bridge = bridge, bridge.displayID != 0 else { return false }
+         let id = bridge.displayID
+ 
+-        setIsApplyingArrangement(true)
+-        defer {
+-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+-                self?.setIsApplyingArrangement(false)
+-            }
+-        }
++        suppressReconfiguration(for: 1.5)
+ 
+         var config: CGDisplayConfigRef?
+         let beginErr = CGBeginDisplayConfiguration(&config)
+@@ -390,9 +394,15 @@ public final class VirtualDisplayManager {
+         let mainID = CGMainDisplayID()
+         let mainBounds = CGDisplayBounds(mainID)
+ 
+-        let logW = (currentOrientation == .landscape) ? Self.logicalHeight : Self.logicalWidth
+-        let logH = (currentOrientation == .landscape) ? Self.logicalWidth : Self.logicalHeight
+-        let mirooSize = CGSize(width: Double(logW), height: Double(logH))
++        let currentDisplayBounds = CGDisplayBounds(id)
++        let mirooSize: CGSize
++        if currentDisplayBounds.width > 0 && currentDisplayBounds.height > 0 {
++            mirooSize = currentDisplayBounds.size
++        } else {
++            let logW = (currentOrientation == .landscape) ? Self.physicalHeight : Self.physicalWidth
++            let logH = (currentOrientation == .landscape) ? Self.physicalWidth : Self.physicalHeight
++            mirooSize = CGSize(width: Double(logW), height: Double(logH))
++        }
+ 
+         let targetOrigin: CGPoint
+         if restoreSaved {
+@@ -429,6 +439,7 @@ public final class VirtualDisplayManager {
+             }
+         }
+ 
++        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
+         return true
+     }
+ 
+@@ -443,9 +454,11 @@ public final class VirtualDisplayManager {
+             return false
+         }
+ 
+-        // Look for the HiDPI mode: width == logicalWidth, pixelWidth == physicalWidth
++        // Look for the HiDPI mode matching the current orientation
++        let targetLogW = (currentOrientation == .landscape) ? Self.logicalHeight : Self.logicalWidth
++        let targetPhysW = (currentOrientation == .landscape) ? Self.physicalHeight : Self.physicalWidth
+         if let hidpiMode = modeList.first(where: {
+-            $0.width == Int(Self.logicalWidth) && $0.pixelWidth == Int(Self.physicalWidth)
++            $0.width == Int(targetLogW) && $0.pixelWidth == Int(targetPhysW)
+         }) {
+             let err = CGDisplaySetDisplayMode(id, hidpiMode, nil)
+             if err == .success {
